@@ -1,0 +1,6 @@
+# interfaces.txt
+# One interface per line. Lines starting with # are ignored.
+# Edit this file at any time — changes are picked up automatically.
+# Example:
+# eth0
+# eth1

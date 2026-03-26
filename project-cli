@@ -1,0 +1,1288 @@
+#!/usr/bin/env python3
+# project-cli — Interactive project configuration shell
+#
+# Usage:
+#   ./project-cli                      interactive mode
+#   ./project-cli --standalone         no daemon needed
+#   ./project-cli --socket /tmp/x.sock custom socket
+#
+# Once inside:
+#   project> show lldp                 version + daemon status
+#   project> show modules              list available modules
+#   project> lldp                      enter lldp config mode
+#   project(lldp)> info                list all keys
+#   project(lldp)> info TTL            details for TTL
+#   project(lldp)> show config         current values
+#   project(lldp)> get TTL             get one value
+#   project(lldp)> set TTL 60          change a value
+#   project(lldp)> del TTL             reset to default
+#   project(lldp)> back                return to top level
+
+import cmd
+import sys
+import json
+import os
+import readline
+import shutil
+import socket as _sock
+import sys
+
+# ── Paths ─────────────────────────────────────────────────────
+_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _DIR)
+
+# ── Colour helpers ────────────────────────────────────────────
+_USE_COLOR = sys.stdout.isatty()
+
+def _c(text: str, code: str) -> str:
+    if not _USE_COLOR:
+        return text
+    codes = {
+        "bold":   "\033[1m",  "reset": "\033[0m",
+        "green":  "\033[32m", "yellow": "\033[33m",
+        "cyan":   "\033[36m", "red":    "\033[31m",
+        "white":  "\033[97m", "grey":   "\033[90m",
+        "blue":   "\033[34m", "magenta":"\033[35m",
+    }
+    return codes.get(code, "") + text + "\033[0m"
+
+def _header(text: str):
+    w = shutil.get_terminal_size().columns
+    bar = "─" * min(w, 70)
+    print(_c(bar, "grey"))
+    print(_c(f"  {text}", "bold"))
+    print(_c(bar, "grey"))
+
+def _ok(msg):   print(_c(f"  ✓ {msg}", "green"))
+def _err(msg):  print(_c(f"  ✗ {msg}", "red"))
+def _warn(msg): print(_c(f"  ⚠ {msg}", "yellow"))
+def _info(msg): print(f"  {msg}")
+
+# ── Mandatory keys (del blocked) ──────────────────────────────
+MANDATORY_KEYS = {
+    "SEND_INTERVAL",
+    "TTL",
+    "WATCH_INTERVAL",
+    "MAX_NEIGHBORS_PER_INTERFACE",
+}
+
+APP_TYPES = {
+    1:"Voice", 2:"Voice Signaling", 3:"Guest Voice",
+    4:"Guest Voice Signaling", 5:"Softphone Voice",
+    6:"Video Conferencing", 7:"Streaming Video", 8:"Video Signaling",
+}
+
+# ══════════════════════════════════════════════════════════════
+#  Adapter — IPC or direct
+# ══════════════════════════════════════════════════════════════
+
+class _FileAdapter:
+    """
+    Language-agnostic fallback adapter.
+
+    Reads schema.json (written by any module at startup) and
+    reads/writes runtime_config.json + interfaces.txt directly.
+
+    Works with modules written in any language as long as they
+    write a schema.json describing their configuration.
+
+    Schema format (written by lldp/startup.py export_schema()):
+    {
+      "module": "lldp",
+      "version": "1.0.21",
+      "keys": {
+        "TTL": {
+          "type": "int", "description": "...",
+          "default": 120, "min": 10, "max": 65535,
+          "mandatory": true, "group": "Timing"
+        }
+      }
+    }
+    """
+
+    def __init__(self, base_dir: str):
+        self._base   = base_dir
+        self._schema = self._load_schema()
+        self._cfg    = os.path.join(base_dir, "runtime_config.json")
+        self._ifaces = os.path.join(base_dir, "interfaces.txt")
+
+    def _load_schema(self) -> dict:
+        path = os.path.join(self._base, "schema.json")
+        if not os.path.exists(path):
+            return {}
+        with open(path) as f:
+            data = json.load(f)
+        return data.get("keys", data)
+
+    def _load_overrides(self) -> dict:
+        if not os.path.exists(self._cfg):
+            return {}
+        try:
+            with open(self._cfg) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    def _save_overrides(self, data: dict):
+        with open(self._cfg, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def _coerce(self, key: str, value):
+        """Cast value to the type declared in schema.json."""
+        entry = self._schema.get(key, {})
+        typ   = entry.get("type", "str")
+        lo    = entry.get("min")
+        hi    = entry.get("max")
+
+        if typ == "bool":
+            if isinstance(value, bool):   return value
+            if isinstance(value, str):
+                if value.lower() in ("true",  "1", "yes", "on"):  return True
+                if value.lower() in ("false", "0", "no",  "off"): return False
+            if isinstance(value, int):    return bool(value)
+            raise ValueError(f"Cannot convert {value!r} to bool")
+        if typ == "int":
+            v = int(value)
+            if lo is not None and v < lo:
+                raise ValueError(f"'{key}' minimum is {lo}, got {v}")
+            if hi is not None and v > hi:
+                raise ValueError(f"'{key}' maximum is {hi}, got {v}")
+            return v
+        return value
+
+    # ── Schema ────────────────────────────────────────────────
+
+    def get_schema(self) -> list:
+        overrides = self._load_overrides()
+        rows = []
+        # Group by group field in schema
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for k, e in self._schema.items():
+            groups[e.get("group", "Other")].append(k)
+
+        group_order = list(dict.fromkeys(
+            e.get("group", "Other") for e in self._schema.values()
+        ))
+
+        for group in group_order:
+            for k in groups[group]:
+                e       = self._schema[k]
+                default = e.get("default")
+                val     = overrides.get(k, default)
+                try:
+                    val = self._coerce(k, val) if val is not None else default
+                except Exception:
+                    pass
+                rows.append({
+                    "group":       group,
+                    "key":         k,
+                    "value":       val,
+                    "type":        e.get("type", "str"),
+                    "description": e.get("description", ""),
+                    "min":         e.get("min"),
+                    "max":         e.get("max"),
+                    "mandatory":   e.get("mandatory", False),
+                    "default":     default,
+                })
+        return rows
+
+    # ── Config ops ────────────────────────────────────────────
+
+    def config_get(self, key: str):
+        key       = key.upper()
+        overrides = self._load_overrides()
+        if key in overrides:
+            return overrides[key]
+        entry = self._schema.get(key)
+        if entry is None:
+            raise KeyError(f"Unknown key '{key}'")
+        return entry.get("default")
+
+    def config_set(self, key: str, value):
+        key   = key.upper()
+        if key not in self._schema:
+            raise KeyError(f"Unknown key '{key}'")
+        coerced   = self._coerce(key, value)
+        overrides = self._load_overrides()
+        overrides[key] = coerced
+        self._save_overrides(overrides)
+        return coerced
+
+    def config_del(self, key: str):
+        key   = key.upper()
+        entry = self._schema.get(key)
+        if entry is None:
+            raise KeyError(f"Unknown key '{key}'")
+        overrides = self._load_overrides()
+        overrides.pop(key, None)
+        self._save_overrides(overrides)
+
+    # ── Interfaces ────────────────────────────────────────────
+
+    def interfaces_list(self) -> list:
+        if not os.path.exists(self._ifaces):
+            return []
+        with open(self._ifaces) as f:
+            return [l.strip() for l in f
+                    if l.strip() and not l.strip().startswith("#")]
+
+    def interfaces_add(self, name: str):
+        ifaces = self.interfaces_list()
+        if name not in ifaces:
+            ifaces.append(name)
+            _write_ifaces(self._ifaces, ifaces)
+
+    def interfaces_remove(self, name: str):
+        ifaces = self.interfaces_list()
+        if name in ifaces:
+            ifaces.remove(name)
+            _write_ifaces(self._ifaces, ifaces)
+
+    def neighbors_list(self):
+        return None   # not available without daemon
+
+    def close(self): pass
+
+
+class _Adapter:
+    """Thin wrapper — talks to daemon via IPC or module directly."""
+
+    def __init__(self, socket_path: str, standalone: bool):
+        self._standalone   = standalone
+        self._socket_path  = socket_path
+        self._sock         = None
+        self._buf          = b""
+        self._seq          = 0
+        self._cm           = None
+        self._cfg          = None
+        self._groups       = None
+        self._file_adapter = None   # tier-3: file-based
+
+        if standalone:
+            # Standalone: try Python direct, then file-based
+            try:
+                self._init_direct()
+            except ImportError:
+                base = os.path.dirname(os.path.abspath(self._socket_path))
+                for candidate in [base, os.getcwd()]:
+                    schema_path = os.path.join(candidate, "schema.json")
+                    if os.path.exists(schema_path):
+                        self._file_adapter = _FileAdapter(candidate)
+                        print(_c(f"  ℹ Using file-based adapter "
+                                 f"(schema.json found in {candidate})", "grey"))
+                        break
+        else:
+            self._init_ipc()
+
+    def _init_direct(self):
+        from lldp import config_manager, config
+        from lldp._config_groups import CONFIG_GROUPS
+        from lldp.watcher import read_interfaces
+        self._cm          = config_manager
+        self._cfg         = config
+        self._groups      = CONFIG_GROUPS
+        self._read_ifaces = read_interfaces
+        config_manager.load()
+
+    def _init_ipc(self):
+        """
+        Three-tier fallback:
+          1. IPC socket  — any language, daemon must be running
+          2. Direct import — Python modules only, no daemon needed
+          3. File-based  — any language, reads schema.json + config files
+        """
+        # Tier 1: IPC
+        try:
+            s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+            s.settimeout(3)
+            s.connect(self._socket_path)
+            self._sock = s
+            return
+        except OSError:
+            self._sock = None
+
+        # Tier 2: Python direct import
+        try:
+            self._init_direct()
+            self._file_adapter = None
+            return
+        except ImportError:
+            pass
+
+        # Tier 3: File-based (language-agnostic)
+        base = os.path.dirname(os.path.abspath(self._socket_path))
+        # Also check working directory
+        for candidate in [base, os.getcwd()]:
+            schema_path = os.path.join(candidate, "schema.json")
+            if os.path.exists(schema_path):
+                self._file_adapter = _FileAdapter(candidate)
+                print(_c(f"  ℹ Using file-based adapter "
+                         f"(schema.json found in {candidate})", "grey"))
+                return
+
+        # Nothing worked
+        self._file_adapter = None
+        print(_c("  ⚠ No daemon, no Python module, no schema.json found. "
+                 "Limited functionality available.", "yellow"))
+
+    @property
+    def connected(self) -> bool:
+        return self._sock is not None
+
+    def _rpc(self, cmd: str, params: dict = None) -> object:
+        if not self._sock:
+            raise RuntimeError("No IPC connection")
+        self._seq += 1
+        req = json.dumps({"id": self._seq, "cmd": cmd,
+                          "params": params or {}}) + "\n"
+        self._sock.sendall(req.encode())
+        while b"\n" not in self._buf:
+            chunk = self._sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("Server closed connection")
+            self._buf += chunk
+        line, self._buf = self._buf.split(b"\n", 1)
+        resp = json.loads(line)
+        if not resp.get("ok"):
+            raise RuntimeError(resp.get("error", "unknown IPC error"))
+        return resp.get("result")
+
+    # ── Routing helper ────────────────────────────────────────
+
+    def _call(self, ipc_cmd: str, ipc_params: dict,
+              direct_fn, *direct_args, **direct_kwargs):
+        """
+        Route a call through the highest-priority available path:
+          1. IPC socket  (any language, daemon running)
+          2. Python direct import (Python only, no daemon)
+          3. File-based adapter (any language, schema.json present)
+        """
+        # Tier 1: IPC
+        if self._sock:
+            try:
+                return self._rpc(ipc_cmd, ipc_params)
+            except (ConnectionError, OSError) as e:
+                print(_c(f"  ⚠ IPC connection lost ({e}), "
+                         f"falling back to next tier.", "yellow"))
+                self._sock = None
+                # Try to re-init direct or file
+                try:
+                    self._init_direct()
+                except ImportError:
+                    pass
+
+        # Tier 2: Python direct import
+        if self._cm is not None:
+            return direct_fn(*direct_args, **direct_kwargs)
+
+        # Tier 3: File-based
+        if self._file_adapter is not None:
+            # Map the call to the file adapter method
+            return direct_fn(*direct_args, **direct_kwargs)
+
+        raise RuntimeError(
+            "No communication path available. "
+            "Start the daemon, ensure the module is importable, "
+            "or provide schema.json for file-based access."
+        )
+
+    # ── Schema ────────────────────────────────────────────────
+
+    def get_schema(self) -> list:
+        """
+        Return full schema as list of dicts.
+        In IPC mode: values come from the live daemon via config.show.
+        In direct mode: values come from the live config module.
+        """
+        from lldp import config_manager
+        from lldp._config_groups import CONFIG_GROUPS
+
+        # Fetch live values (IPC or direct)
+        if self._sock:
+            try:
+                live_rows = self._rpc("config.show")
+                # live_rows is [{group, key, value, description}, ...]
+                # Augment with type/bounds/mandatory/default from local schema
+                live_map = {r["key"]: r["value"] for r in live_rows}
+            except (ConnectionError, OSError):
+                live_map = None
+        else:
+            live_map = None
+
+        # Tier 3: file adapter
+        if live_map is None and self._cm is None and self._file_adapter:
+            return self._file_adapter.get_schema()
+
+        rows = []
+        for group, keys in CONFIG_GROUPS.items():
+            for k in keys:
+                if k not in config_manager.SCHEMA:
+                    continue
+                e   = config_manager.SCHEMA[k]
+                val = live_map[k] if (live_map and k in live_map)                       else config_manager.get(k)
+                rows.append({
+                    "group":       group,
+                    "key":         k,
+                    "value":       val,
+                    "type":        e[0].__name__,
+                    "description": e[1],
+                    "min":         e[2] if len(e) > 2 else None,
+                    "max":         e[3] if len(e) > 3 else None,
+                    "mandatory":   k in MANDATORY_KEYS,
+                    "default":     _get_default(k),
+                })
+        return rows
+
+    # ── Config ops ────────────────────────────────────────────
+
+    def config_get(self, key: str):
+        def _direct(k):
+            if self._file_adapter:
+                return self._file_adapter.config_get(k)
+            from lldp import config_manager
+            return config_manager.get(k)
+        result = self._call("config.get", {"key": key}, _direct, key.upper())
+        return result["value"] if isinstance(result, dict) else result
+
+    def config_set(self, key: str, value: str):
+        def _direct(k, v):
+            if self._file_adapter:
+                return self._file_adapter.config_set(k, v)
+            from lldp import config_manager
+            config_manager.set(k, v)
+            return config_manager.get(k)
+        result = self._call("config.set", {"key": key, "value": value},
+                            _direct, key.upper(), value)
+        return result["value"] if isinstance(result, dict) else result
+
+    def config_del(self, key: str):
+        """Reset a key to its default value (all three tiers)."""
+        key = key.upper()
+        if self._sock:
+            default = _get_default(key)
+            if default is None:
+                raise KeyError(f"No default found for '{key}'")
+            self._rpc("config.set", {"key": key, "value": default})
+        elif self._file_adapter:
+            self._file_adapter.config_del(key)
+        else:
+            from lldp import config_manager
+            config_manager.reset(key)
+
+    # ── Interfaces ────────────────────────────────────────────
+
+    def interfaces_list(self) -> list:
+        def _direct():
+            if self._file_adapter:
+                return self._file_adapter.interfaces_list()
+            from lldp import config
+            from lldp.watcher import read_interfaces
+            return read_interfaces(config.INTERFACES_FILE)
+        return self._call("interfaces.list", {}, _direct)
+
+    def interfaces_add(self, name: str):
+        def _direct(n):
+            if self._file_adapter:
+                return self._file_adapter.interfaces_add(n)
+            from lldp.security import validate_iface_name
+            from lldp import config
+            from lldp.watcher import read_interfaces
+            validate_iface_name(n)
+            ifaces = read_interfaces(config.INTERFACES_FILE)
+            if n not in ifaces:
+                ifaces.append(n)
+                _write_ifaces(config.INTERFACES_FILE, ifaces)
+        self._call("interfaces.add", {"name": name}, _direct, name)
+
+    def interfaces_remove(self, name: str):
+        def _direct(n):
+            if self._file_adapter:
+                return self._file_adapter.interfaces_remove(n)
+            from lldp import config
+            from lldp.watcher import read_interfaces
+            ifaces = read_interfaces(config.INTERFACES_FILE)
+            if n in ifaces:
+                ifaces.remove(n)
+                _write_ifaces(config.INTERFACES_FILE, ifaces)
+        self._call("interfaces.remove", {"name": name}, _direct, name)
+
+    def neighbors_list(self) -> dict:
+        if self._sock:
+            return self._rpc("neighbors.list")
+        return None   # not available without daemon
+
+    def close(self):
+        if self._sock:
+            try: self._sock.close()
+            except OSError: pass
+
+
+def _write_ifaces(path, ifaces):
+    with open(path, "w") as f:
+        f.write("# interfaces.txt\n# One interface per line.\n")
+        for n in ifaces:
+            f.write(n + "\n")
+
+
+# Cache of config.py defaults — parsed once with ast, never reloads the module
+_DEFAULTS_CACHE: dict = {}
+
+def _get_default(key: str):
+    """
+    Return the default value from config.py without reloading the module.
+    Uses ast.literal_eval so live runtime state is never disturbed.
+    """
+    global _DEFAULTS_CACHE
+    if not _DEFAULTS_CACHE:
+        import ast as _ast, os as _os
+        path = _os.path.join(_os.path.dirname(_os.path.abspath("project-cli")),
+                             "lldp", "config.py")
+        try:
+            with open(path) as f:
+                tree = _ast.parse(f.read())
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, _ast.Name):
+                            try:
+                                _DEFAULTS_CACHE[target.id] = _ast.literal_eval(node.value)
+                            except (ValueError, TypeError):
+                                pass
+        except Exception:
+            pass
+    return _DEFAULTS_CACHE.get(key)
+
+
+# ══════════════════════════════════════════════════════════════
+#  Formatters
+# ══════════════════════════════════════════════════════════════
+
+def _fmt_type(entry: dict) -> str:
+    typ = entry.get("type", "")
+    lo  = entry.get("min")
+    hi  = entry.get("max")
+    if lo is not None and hi is not None:
+        return f"{typ} [{lo}–{hi}]"
+    if lo is not None:
+        return f"{typ} [min {lo}]"
+    if hi is not None:
+        return f"{typ} [max {hi}]"
+    return typ
+
+
+def _print_info_table(rows: list, filter_key: str = None):
+    """Print grouped info table of all keys."""
+    if filter_key:
+        rows = [r for r in rows if r["key"].upper() == filter_key.upper()]
+        if not rows:
+            _err(f"Unknown key '{filter_key}'")
+            return
+        # Single key — detailed view
+        r = rows[0]
+        _header(f"Key: {r['key']}")
+        print()
+        _info(f"{'Group':<18}: {_c(r['group'], 'cyan')}")
+        _info(f"{'Description':<18}: {r['description']}")
+        _info(f"{'Type':<18}: {_fmt_type(r)}")
+        cur_str = _c(str(r['value']), 'yellow')
+        _info(f"{'Current value':<18}: {cur_str}")
+        def_str = _c(str(r['default']), 'grey')
+        _info(f"{'Default value':<18}: {def_str}")
+        mand = _c("Yes — cannot be deleted", "red") if r['mandatory'] \
+               else _c("No", "green")
+        _info(f"{'Mandatory':<18}: {mand}")
+        print()
+        return
+
+    group = None
+    KW = 38
+    print()
+    for r in rows:
+        row_group = r.get("group", "")
+        if row_group != group:
+            group = row_group
+            if group:
+                print(_c(f"\n  ▸ {group}", "cyan"))
+            print(_c(f"  {'Key':<{KW}} {'Type':<20} Description", "grey"))
+            print(_c(f"  {'─'*78}", "grey"))
+
+        key_str = _c(r["key"], "bold") if r["mandatory"] else r["key"]
+        mand    = _c(" *", "red") if r["mandatory"] else "  "
+        print(f"  {key_str + mand:<{KW+10}} {_fmt_type(r):<20} {r['description']}")
+    print()
+    print(_c("  * = mandatory key (del not allowed)", "grey"))
+    print()
+
+
+def _print_config_table(rows: list):
+    """Print grouped config table with current + default values."""
+    _header("Current Configuration")
+    group = None
+    KW = 36
+    VW = 12
+    print()
+    for r in rows:
+        row_group = r.get("group", "")
+        if row_group != group:
+            group = row_group
+            if group:
+                print(_c(f"\n  ▸ {group}", "cyan"))
+            print(_c(f"  {'Key':<{KW}} {'Value':<{VW}} Default", "grey"))
+            print(_c(f"  {'─'*70}", "grey"))
+
+        val     = r["value"]
+        default = r["default"]
+        changed = str(val) != str(default)
+
+        val_str = _c(str(val), "yellow") if changed else str(val)
+        def_str = _c(str(default), "grey")
+
+        print(f"  {r['key']:<{KW}} {val_str:<{VW + (10 if changed else 0)}}  {def_str}")
+    print()
+    print(_c("  Yellow = changed from default", "grey"))
+    print()
+
+
+# ══════════════════════════════════════════════════════════════
+#  lldp config mode shell
+# ══════════════════════════════════════════════════════════════
+
+class ModuleConfigShell(cmd.Cmd):
+    """
+    Generic interactive config shell for any module (lldp, C modules, etc.)
+    Driven entirely by the module's adapter — no module-specific code here.
+    """
+
+    intro  = ""
+
+    def __init__(self, module_name: str, module_adapter):
+        super().__init__()
+        self._name    = module_name
+        self._mod     = module_adapter          # ModuleAdapter instance
+        self._schema  = None                    # cached on first use
+        self.prompt   = (_c("project", "blue") +
+                         _c(f"(config-{module_name})", "cyan") + "> ")
+
+    def _get_schema(self) -> list:
+        if self._schema is None:
+            self._schema = self._mod.schema_rows()
+        return self._schema
+
+    def _all_keys(self) -> list[str]:
+        return [r["key"] for r in self._get_schema()]
+
+    def _invalidate_cache(self):
+        self._schema = None
+
+    def _mandatory_keys(self) -> set:
+        return {r["key"] for r in self._get_schema() if r.get("mandatory")}
+
+
+    # ── Tab completion helpers ────────────────────────────────
+
+    def _complete_key(self, text: str) -> list[str]:
+        return [k for k in self._all_keys() if k.startswith(text.upper())]
+
+    def complete_get(self, text, line, bi, ei):
+        return self._complete_key(text)
+
+    def complete_set(self, text, line, bi, ei):
+        parts = line.split()
+        if len(parts) <= 1 or (len(parts) == 2 and not line.endswith(" ")):
+            return self._complete_key(text)
+        # Suggest bool values
+        key = parts[1].upper() if len(parts) > 1 else ""
+        schema = {r["key"]: r for r in self._get_schema()}
+        if key in schema and schema[key]["type"] == "bool":
+            return [v for v in ["true", "false"] if v.startswith(text.lower())]
+        return []
+
+    def complete_del(self, text, line, bi, ei):
+        mandatory = self._mandatory_keys()
+        return [r["key"] for r in self._get_schema()
+                if r["key"].startswith(text.upper())
+                and r["key"] not in mandatory]
+
+    def complete_info(self, text, line, bi, ei):
+        return self._complete_key(text)
+
+    # ── Commands ──────────────────────────────────────────────
+
+    def do_info(self, arg: str):
+        """
+info              List all configurable keys with type, bounds and description.
+info <KEY>        Show full details for a specific key.
+        """
+        rows = self._get_schema()
+        if not rows:
+            _warn(f"'{self._name}' has no configurable parameters.")
+            return
+        _print_info_table(rows, arg.strip() if arg.strip() else None)
+
+    def do_show(self, arg: str):
+        """
+show config       Display all parameters with current and default values.
+        """
+        arg = arg.strip().lower()
+        if arg == "config":
+            rows = self._get_schema()
+            if not rows:
+                _warn(f"'{self._name}' has no configurable parameters.")
+                return
+            _print_config_table(rows)
+        else:
+            _err(f"Unknown show subcommand '{arg}'. Try: show config")
+
+    def do_get(self, arg: str):
+        """
+get <KEY>         Display the current value of a configuration key.
+
+Example:
+  get TTL
+  get SEND_INTERVAL
+        """
+        key = arg.strip().upper()
+        if not key:
+            _err("Usage: get <KEY>")
+            return
+        try:
+            val = self._mod.get(key)
+            print()
+            print(f"  {_c(key, 'bold')} = {_c(str(val), 'yellow')}")
+            print()
+        except (KeyError, RuntimeError) as e:
+            _err(str(e))
+
+    def do_set(self, arg: str):
+        """
+set <KEY> <VALUE>  Change a configuration key.
+
+Examples:
+  set TTL 60
+  set SEND_INTERVAL 15
+  set TLV_DOT3_POE_ENABLED true
+  set MAX_NEIGHBORS_PER_INTERFACE 16
+        """
+        parts = arg.split(None, 1)
+        if len(parts) < 2:
+            _err("Usage: set <KEY> <VALUE>")
+            return
+        key, value = parts[0].upper(), parts[1].strip()
+        try:
+            self._mod.set(key, value)
+            val = self._mod.get(key)
+            self._invalidate_cache()
+            _ok(f"{key} = {val}")
+        except (KeyError, ValueError, RuntimeError) as e:
+            _err(str(e))
+
+    def do_del(self, arg: str):
+        """
+del <KEY>         Reset a key to its default value.
+                  Mandatory keys (SEND_INTERVAL, TTL, etc.) cannot be deleted.
+
+Examples:
+  del TLV_DOT3_POE_ENABLED
+  del DISPLAY_INTERVAL
+        """
+        key = arg.strip().upper()
+        if not key:
+            _err("Usage: del <KEY>")
+            return
+        mandatory = self._mandatory_keys()
+        if key in mandatory:
+            _err(f"'{key}' is a mandatory key and cannot be deleted.")
+            _warn(f"Use 'set {key} <value>' to change it instead.")
+            return
+        schema = {r["key"]: r for r in self._get_schema()}
+        if key not in schema:
+            _err(f"Unknown key '{key}'")
+            return
+        try:
+            default = schema[key].get("default")
+            self._mod.reset(key)
+            self._invalidate_cache()
+            _ok(f"{key} reset to default: {default}")
+        except (KeyError, ValueError) as e:
+            _err(str(e))
+
+    def do_back(self, _):
+        """Return to the top-level shell."""
+        return True
+
+    def do_exit(self, _):
+        """Return to the top-level shell."""
+        return True
+
+    def do_EOF(self, _):
+        print()
+        return True
+
+    def default(self, line: str):
+        _err(f"Unknown command '{line.split()[0]}'. Type 'help' for available commands.")
+
+    def emptyline(self):
+        pass   # don't repeat last command on empty enter
+
+# Keep LldpConfigShell as an alias that uses the new generic shell
+# (backward compat — ConfigShell still calls it)
+class LldpConfigShell(ModuleConfigShell):
+    def __init__(self, adapter: _Adapter):
+        # Build lldp module adapter
+        try:
+            sys.path.insert(0, _DIR)
+            from modules import get_adapter
+            mod = get_adapter("lldp")
+        except Exception:
+            mod = _LegacyLldpAdapter(adapter)
+        super().__init__("lldp", mod)
+
+
+class _LegacyLldpAdapter:
+    """Fallback when modules/ is not available — uses _Adapter directly."""
+    def __init__(self, adapter):
+        self._a = adapter
+        sys.path.insert(0, _DIR)
+        try:
+            from lldp import config_manager, config
+            from lldp._config_groups import CONFIG_GROUPS
+            from lldp.__version__ import VERSION
+            self._cm      = config_manager
+            self._cfg     = config
+            self._groups  = CONFIG_GROUPS
+            self._version = VERSION
+            config_manager.load()
+        except ImportError:
+            self._cm = self._cfg = self._groups = None
+            self._version = "unknown"
+        from modules.base import ModuleAdapter
+        self.SCHEMA         = {}
+        self.MANDATORY_KEYS = set()
+        self.VERSION        = self._version
+
+    @property
+    def version(self): return self._version
+    @property
+    def active(self): return self._a.connected
+
+    def get(self, key):   return self._a.config_get(key)["value"]
+    def set(self, key, v): self._a.config_set(key, v)
+    def reset(self, key): self._a.config_del(key)
+    def config_snapshot(self):
+        if not self._cm: return {}
+        return {k: self._cm.get(k) for k in self._cm.SCHEMA}
+
+    def schema_rows(self):
+        rows = self._a.get_schema()
+        for r in rows:
+            r.setdefault("mandatory", r["key"] in MANDATORY_KEYS)
+            r.setdefault("default", None)
+        return rows
+
+
+# ══════════════════════════════════════════════════════════════
+#  Top-level shell
+# ══════════════════════════════════════════════════════════════
+
+# Legacy MODULES dict — kept as fallback when modules/ is not importable
+MODULES = {
+    "common":    {"description": "Shared project settings (SOCK_DIR, …)"},
+    "fib":       {"description": "Forwarding & Routing Information Base"},
+    "fdb":       {"description": "Forwarding Database — MAC learning & ageing"},
+    "rib":       {"description": "L2 Routing Information Base"},
+    "stp":       {"description": "Spanning Tree Protocol"},
+    "mst":       {"description": "Multiple Spanning Tree"},
+    "rstp":      {"description": "Rapid Spanning Tree"},
+    "vlan":      {"description": "VLAN database"},
+    "igmp":      {"description": "IGMP snooping"},
+    "lacp":      {"description": "Link Aggregation Control Protocol"},
+    "arp":       {"description": "ARP snooping"},
+    "interface": {"description": "Interface policies (Port Security & Storm Control)"},
+    "lldp":      {"description": "IEEE 802.1AB Link Layer Discovery Protocol"},
+    "bfd":       {"description": "Bidirectional Forwarding Detection (RFC 5880)"},
+}
+
+def _get_modules() -> dict:
+    """Return discovered modules from the registry, else legacy MODULES."""
+    try:
+        from modules import discover
+        return {k: {"description": v["description"]} for k, v in discover().items()}
+    except ImportError:
+        return MODULES
+
+
+# ══════════════════════════════════════════════════════════════
+#  Config mode shell  (project(config)> )
+# ══════════════════════════════════════════════════════════════
+
+class ConfigShell(cmd.Cmd):
+    """Intermediate config mode — choose which module to configure."""
+
+    intro  = ""
+    prompt = _c("project", "blue") + _c("(config)", "cyan") + "> "
+
+    def __init__(self, adapter: _Adapter):
+        super().__init__()
+        self._adapter = adapter
+
+    def do_common(self, _):
+        """Enter shared project settings (SOCK_DIR, …)."""
+        self._enter_module("common")
+
+    def do_lldp(self, _):
+        """Enter LLDP configuration area."""
+        self._enter_module("lldp")
+
+    def do_bfd(self, _):
+        """Enter BFD configuration area."""
+        self._enter_module("bfd")
+
+    def _enter_module(self, name: str):
+        print()
+        print(_c(f"  Entering {name} configuration area.", "cyan"))
+        print(_c("  Type 'info' for all keys, 'help' for commands, 'back' to return.", "grey"))
+        print()
+        try:
+            from modules import get_adapter
+            mod = get_adapter(name)
+            ModuleConfigShell(name, mod).cmdloop()
+        except Exception as e:
+            _err(f"Could not load module '{name}': {e}")
+
+    def do_example(self, _):
+        """Enter example C module configuration area."""
+        self._enter_module("example")
+
+    def complete_show(self, text, line, bi, ei):
+        try:
+            from modules import REGISTRY
+            opts = list(REGISTRY.keys())
+        except ImportError:
+            opts = list(MODULES.keys())
+        return [o for o in opts if o.startswith(text)]
+
+    def default(self, line: str):
+        """Try to open any registered module by name."""
+        name = line.split()[0].lower() if line.split() else ""
+        try:
+            from modules import REGISTRY
+            if name in REGISTRY:
+                self._enter_module(name)
+                return
+        except ImportError:
+            pass
+        _err(f"Unknown module '{name}'. "
+             f"Type 'help' to see available modules.")
+
+    def completenames(self, text, *ignored):
+        # Built-in do_* completions
+        names = [a[3:] for a in self.get_names() if a.startswith("do_" + text)]
+        # All discovered module names
+        try:
+            from modules import discover
+            names += [n for n in discover() if n.startswith(text) and n not in names]
+        except ImportError:
+            names += [n for n in MODULES if n.startswith(text) and n not in names]
+        return names
+
+    def do_help(self, arg: str):
+        if arg:
+            super().do_help(arg)
+        else:
+            _header("configure — Module Selection")
+            print()
+            print(_c("  Discovered modules:", "cyan"))
+            for name, meta in _get_modules().items():
+                print(f"    {_c(name, 'bold'):<20} {meta['description']}")
+            print()
+            print(_c("  Commands:", "cyan"))
+            print(f"    {'<module>':<20} Enter that module's configuration area")
+            print(f"    {'back / exit':<20} Return to top level")
+            print()
+
+    def do_back(self, _):
+        """Return to the top-level shell."""
+        return True
+
+    def do_exit(self, _):
+        """Return to the top-level shell."""
+        return True
+
+    def do_EOF(self, _):
+        print()
+        return True
+
+    def default(self, line: str):
+        name = line.split()[0].lower() if line.split() else line
+        try:
+            from modules import discover
+            if name in discover():
+                self._enter_module(name)
+                return
+        except ImportError:
+            pass
+        _err(f"Unknown module '{name}'. Type 'help' to see available modules.")
+
+    def emptyline(self):
+        pass
+
+
+class ProjectShell(cmd.Cmd):
+    """Top-level interactive project shell."""
+
+    intro  = None
+    prompt = _c("project", "blue") + "> "
+
+    def __init__(self, adapter: _Adapter):
+        super().__init__()
+        self._adapter = adapter
+
+    # ── configure ─────────────────────────────────────────────
+
+    def do_configure(self, _):
+        """Enter configuration mode. Then type a module name (e.g. lldp)."""
+        print()
+        print(_c("  Entering configuration mode.", "cyan"))
+        print(_c("  Type a module name to configure it (e.g. 'lldp'), "
+                 "'help' for options, 'back' to return.", "grey"))
+        print()
+        ConfigShell(self._adapter).cmdloop()
+
+    # ── show ──────────────────────────────────────────────────
+
+    def do_show(self, arg: str):
+        """
+show modules      List all discovered modules and their status.
+show <module>     Show version and daemon status for a module.
+        """
+        arg = arg.strip().lower()
+
+        if arg == "modules":
+            _header("Discovered Modules")
+            print()
+            for name, meta in _get_modules().items():
+                print(f"  {_c(name, 'bold'):<20} {meta['description']}")
+            print()
+
+        elif arg == "lldp":
+            self._show_lldp()
+
+        elif arg:
+            discovered = _get_modules()
+            if arg in discovered:
+                self._show_generic_module(arg)
+            else:
+                _err(f"Unknown module '{arg}'. Try: show modules")
+
+        else:
+            _err("Usage: show modules  |  show <module>")
+
+    def _show_lldp(self):
+        from lldp import VERSION, PROTOCOL, DESCRIPTION
+
+        # Daemon status
+        active = self._adapter.connected
+        if active:
+            status_str = _c("● active (running)", "green")
+        else:
+            # Check if socket file exists but connection failed
+            if os.path.exists(self._adapter._socket_path):
+                status_str = _c("● socket exists but not reachable", "yellow")
+            else:
+                status_str = _c("○ inactive (no daemon / standalone mode)", "grey")
+
+        # Interface count
+        try:
+            ifaces = self._adapter.interfaces_list()
+            iface_str = ", ".join(ifaces) if ifaces else _c("none configured", "grey")
+        except Exception:
+            iface_str = _c("unavailable", "grey")
+
+        # Neighbor count
+        nb_str = _c("unavailable (standalone)", "grey")
+        if active:
+            try:
+                nb = self._adapter.neighbors_list()
+                nb_str = str(len(nb)) if nb is not None else nb_str
+            except Exception:
+                pass
+
+        # Runtime config file
+        try:
+            from lldp import config as _cfg
+            rc_path    = _cfg.RUNTIME_CONFIG
+            rc_exists  = os.path.exists(rc_path)
+            rc_str     = _c(rc_path, "cyan") + (
+                _c(" (overrides active)", "yellow") if rc_exists else
+                _c(" (not present — defaults only)", "grey"))
+        except Exception:
+            rc_str = _c("unavailable", "grey")
+
+        _header("LLDP Module")
+        print()
+        _info(f"{'Version':<22}: {_c(VERSION, 'bold')}")
+        _info(f"{'Protocol':<22}: {PROTOCOL}")
+        _info(f"{'Description':<22}: {DESCRIPTION}")
+        _info(f"{'Status':<22}: {status_str}")
+        _info(f"{'Socket':<22}: {self._adapter._socket_path}")
+        _info(f"{'Active interfaces':<22}: {iface_str}")
+        _info(f"{'Neighbor count':<22}: {nb_str}")
+        _info(f"{'Runtime config':<22}: {rc_str}")
+        print()
+
+    def _show_generic_module(self, name: str):
+        try:
+            from modules import get_adapter
+            mod = get_adapter(name)
+        except Exception as e:
+            _err(f"Could not load module '{name}': {e}")
+            return
+
+        status_str = (_c("● active (running)", "green")
+                      if mod.active
+                      else _c("○ inactive (no daemon / file-based mode)", "grey"))
+
+        _header(f"{name.upper()} Module")
+        print()
+        _info(f"{'Version':<22}: {_c(mod.version, 'bold')}")
+        _info(f"{'Status':<22}: {status_str}")
+        print()
+
+    def complete_show(self, text, line, bi, ei):
+        opts = ["modules"] + list(_get_modules().keys())
+        return [o for o in opts if o.startswith(text)]
+
+    # ── Misc ──────────────────────────────────────────────────
+
+    def do_help(self, arg: str):
+        if arg:
+            super().do_help(arg)
+        else:
+            _header("project-cli Help")
+            print()
+            cmds = [
+                ("show lldp",           "Show LLDP version and daemon status"),
+                ("show modules",        "List all available modules"),
+                ("configure",           "Enter configuration mode"),
+                ("help [command]",      "Show this help or help for a command"),
+                ("exit / quit",         "Exit the shell"),
+            ]
+            cfg_cmds = [
+                ("lldp",                "Enter lldp module configuration area"),
+                ("back",                "Return to top level"),
+            ]
+            lldp_cmds = [
+                ("info",                "List all configurable keys"),
+                ("info <KEY>",          "Details for a specific key"),
+                ("show config",         "Display all parameters with current values"),
+                ("get <KEY>",           "Get current value of a key"),
+                ("set <KEY> <VALUE>",   "Change a key"),
+                ("del <KEY>",           "Reset a key to default (mandatory blocked)"),
+                ("back",                "Return to config mode"),
+            ]
+            print(_c("  Top-level commands:", "cyan"))
+            for cmd_str, desc in cmds:
+                print(f"    {cmd_str:<28} {desc}")
+            print()
+            print(_c("  Inside 'configure' mode:", "cyan"))
+            for cmd_str, desc in cfg_cmds:
+                print(f"    {cmd_str:<28} {desc}")
+            print()
+            print(_c("  Inside module config area (e.g. lldp):", "cyan"))
+            for cmd_str, desc in lldp_cmds:
+                print(f"    {cmd_str:<28} {desc}")
+            print()
+
+    def do_exit(self, _):
+        """Exit the shell."""
+        print(_c("  Goodbye.", "grey"))
+        return True
+
+    def do_quit(self, _):
+        """Exit the shell."""
+        return self.do_exit(_)
+
+    def do_EOF(self, _):
+        print()
+        return self.do_exit(_)
+
+    def default(self, line: str):
+        cmd = line.split()[0] if line.split() else line
+        _err(f"Unknown command '{cmd}'. Type 'help' for available commands.")
+
+    def emptyline(self):
+        pass
+
+
+# ══════════════════════════════════════════════════════════════
+#  Banner
+# ══════════════════════════════════════════════════════════════
+
+def _print_banner(adapter: _Adapter):
+    w = min(shutil.get_terminal_size().columns, 70)
+    print()
+    print(_c("  ┌" + "─" * (w - 4) + "┐", "blue"))
+    title = "project-cli"
+    pad   = (w - 4 - len(title)) // 2
+    print(_c("  │" + " " * pad + title + " " * (w - 4 - pad - len(title)) + "│", "blue"))
+    print(_c("  └" + "─" * (w - 4) + "┘", "blue"))
+    print()
+
+    # Quick status line
+    if adapter.connected:
+        mode = _c("● IPC — connected to daemon at " + adapter._socket_path, "green")
+    elif adapter._cm is not None:
+        mode = _c("● Direct — Python module (no daemon needed)", "cyan")
+    elif adapter._file_adapter is not None:
+        mode = _c("● File-based — language-agnostic (schema.json)", "yellow")
+    else:
+        mode = _c("✗ No communication path available", "red")
+    print(f"  Mode: {mode}")
+    print(_c("  Type 'help' for commands. Tab completion available.", "grey"))
+    print()
+
+
+# ══════════════════════════════════════════════════════════════
+#  Entry point
+# ══════════════════════════════════════════════════════════════
+
+def main():
+    import argparse
+    p = argparse.ArgumentParser(
+        prog="project-cli",
+        description="Interactive project configuration shell",
+    )
+    p.add_argument("--socket",     default="/tmp/lldpd.sock",
+                   help="IPC socket path (default: /tmp/lldpd.sock)")
+    p.add_argument("--standalone", action="store_true",
+                   help="Run without daemon (direct module access)")
+    args = p.parse_args()
+
+    adapter = _Adapter(args.socket, args.standalone)
+
+    _print_banner(adapter)
+
+    # Set up readline history
+    histfile = os.path.expanduser("~/.project_cli_history")
+    try:
+        readline.read_history_file(histfile)
+        readline.set_history_length(500)
+    except FileNotFoundError:
+        pass
+
+    try:
+        ProjectShell(adapter).cmdloop()
+    except KeyboardInterrupt:
+        print()
+        print(_c("  Interrupted.", "grey"))
+    finally:
+        try:
+            readline.write_history_file(histfile)
+        except OSError:
+            pass
+        adapter.close()
+
+
+if __name__ == "__main__":
+    main()
