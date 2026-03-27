@@ -39,7 +39,7 @@ echo "    socket dir: $SOCK_DIR"
 FIBD_PID=$!
 
 # wait for sockets to appear (max 5s)
-for i in $(seq 1 50); do
+for i in $(seq 1 100); do
     [ -S "$SOCK_DIR/fibd.sock" ] && [ -S "$SOCK_DIR/ribd.sock" ] && break
     sleep 0.1
 done
