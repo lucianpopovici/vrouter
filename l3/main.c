@@ -3,6 +3,7 @@
 #include "fib_ipc.h"
 #include "rib.h"
 #include "rib_ipc.h"
+#include "persist.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,9 +13,42 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <arpa/inet.h>
 
 static volatile int g_running = 1;
+static volatile int g_sighup  = 0;
 static void sig_handler(int sig) { (void)sig; g_running = 0; }
+static void hup_handler(int sig) { (void)sig; g_sighup  = 1; }
+
+
+/* ── Startup FIB push callback ───────────────────────────────── *
+ * Used by persist_restore() to populate the FIB immediately     *
+ * at startup (before the IPC threads are running).              */
+static fib_table_t *g_startup_fib = NULL;
+
+static void startup_push_to_fib(const rib_entry_t *entry,
+                                  const rib_candidate_t *best,
+                                  int install, void *ctx)
+{
+    fib_table_t *fib = ctx ? (fib_table_t*)ctx : g_startup_fib;
+    if (!fib) return;
+
+    struct in_addr pfx_in = { htonl(entry->prefix) };
+    struct in_addr nh_in  = { htonl(best->nexthop) };
+    char pfx_s[INET_ADDRSTRLEN+4], nh_s[INET_ADDRSTRLEN];
+    char addr_s[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &pfx_in, addr_s, sizeof(addr_s));
+    snprintf(pfx_s, sizeof(pfx_s), "%s/%u", addr_s, entry->prefix_len);
+    inet_ntop(AF_INET, &nh_in, nh_s, sizeof(nh_s));
+
+    if (install) {
+        uint32_t flags = FIB_FLAG_STATIC;
+        if (best->source == RIB_SRC_CONNECTED) flags = FIB_FLAG_CONNECTED;
+        fib_add(fib, pfx_s, nh_s, best->iface, best->metric, flags);
+    } else {
+        fib_del(fib, pfx_s);
+    }
+}
 
 /* ── Compute a socket path: dir + "/" + name ─────────────────── */
 static void mkpath(char *out, size_t sz,
@@ -103,6 +137,11 @@ int main(int argc, char **argv) {
     fib_table_t fib; fib_init(&fib);
     rib_table_t rib; rib_init(&rib);
 
+    /* restore state from previous run */
+    /* push_to_fib is defined in rib_ipc.c — use fib_add directly */
+    /* Restore RIB from previous run and immediately populate FIB */
+    persist_restore(&rib, startup_push_to_fib, &fib, NULL);
+
     if (cli_load_runtime_config(&fib)==0)
         fprintf(stderr,"[main] loaded runtime_config.json"
                        " (MAX_ROUTES=%u)\n",fib.max_routes);
@@ -119,9 +158,10 @@ int main(int argc, char **argv) {
         }
     }
 
-    signal(SIGINT,sig_handler);
-    signal(SIGTERM,sig_handler);
-    signal(SIGPIPE,SIG_IGN);
+    signal(SIGINT,  sig_handler);
+    signal(SIGTERM, sig_handler);
+    signal(SIGHUP,  hup_handler);
+    signal(SIGPIPE, SIG_IGN);
 
     fprintf(stderr,"[main] RIB+FIB daemon starting\n");
 
@@ -133,11 +173,30 @@ int main(int argc, char **argv) {
         perror("pthread_create rib"); return 1;
     }
 
+    /* Run FIB IPC in its own thread so main can handle signals */
+    pthread_t fib_tid;
     fib_arg_t fa; fa.fib=&fib; fa.r=&g_running;
     snprintf(fa.path, sizeof(fa.path), "%s", fib_path);
-    fib_thread(&fa);
+    if (pthread_create(&fib_tid,NULL,fib_thread,&fa)!=0) {
+        perror("pthread_create fib"); return 1;
+    }
+
+    /* ── Management loop: handle SIGHUP while daemons run ── */
+    while (g_running) {
+        if (g_sighup) {
+            fprintf(stderr,"[main] SIGHUP: checkpointing routes...\n");
+            persist_dump(&rib, NULL);
+            g_sighup = 0;
+            fprintf(stderr,"[main] checkpoint done\n");
+        }
+        struct timespec ts = {0, 100000000}; /* 100ms */
+        nanosleep(&ts, NULL);
+    }
 
     pthread_join(rib_tid,NULL);
+    pthread_join(fib_tid,NULL);
+    /* Dump on clean shutdown — must be before rib_destroy */
+    persist_dump(&rib, NULL);
     rib_destroy(&rib);
     fprintf(stderr,"[main] shutdown (fib=%d)\n",
             fib_count(&fib));

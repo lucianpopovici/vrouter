@@ -1,0 +1,70 @@
+{
+  "module": "bfd",
+  "version": "1.0.0",
+  "keys": {
+    "DESIRED_MIN_TX_US": {
+      "type": "int",
+      "description": "Desired minimum TX interval in microseconds",
+      "default": 300000,
+      "min": 10000,
+      "max": 60000000,
+      "mandatory": true,
+      "group": "Timers"
+    },
+    "REQUIRED_MIN_RX_US": {
+      "type": "int",
+      "description": "Required minimum RX interval in microseconds",
+      "default": 300000,
+      "min": 10000,
+      "max": 60000000,
+      "mandatory": true,
+      "group": "Timers"
+    },
+    "DETECT_MULT": {
+      "type": "int",
+      "description": "Detection time multiplier (missed packets before session Down)",
+      "default": 3,
+      "min": 1,
+      "max": 255,
+      "mandatory": true,
+      "group": "Timers"
+    },
+    "MAX_SESSIONS": {
+      "type": "int",
+      "description": "Maximum number of concurrent BFD sessions (restart required)",
+      "default": 64,
+      "min": 1,
+      "max": 1024,
+      "mandatory": false,
+      "group": "Session"
+    },
+    "DEFAULT_AUTH_TYPE": {
+      "type": "str",
+      "description": "Default authentication type: none | md5 | sha1",
+      "default": "none",
+      "mandatory": false,
+      "group": "Session"
+    },
+    "ECHO_ENABLED": {
+      "type": "bool",
+      "description": "Enable BFD echo function",
+      "default": false,
+      "mandatory": false,
+      "group": "Session"
+    },
+    "LOG_LEVEL": {
+      "type": "str",
+      "description": "Log verbosity: DEBUG | INFO | WARNING | ERROR",
+      "default": "INFO",
+      "mandatory": false,
+      "group": "Logging"
+    },
+    "LOG_STATE_CHANGES": {
+      "type": "bool",
+      "description": "Log every session state change",
+      "default": true,
+      "mandatory": false,
+      "group": "Logging"
+    }
+  }
+}

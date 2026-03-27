@@ -12,6 +12,7 @@
 #include "arpsnoop.h"
 #include "lacp.h"
 #include "l2_ipc_extra.h"
+#include "l2_persist.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,7 +23,9 @@
 #include <sys/stat.h>
 
 static volatile int g_running = 1;
+static volatile int g_sighup  = 0;
 static void sig_handler(int sig) { (void)sig; g_running = 0; }
+static void hup_handler(int sig) { (void)sig; g_sighup  = 1; }
 void recalculate_roles_pub(stp_bridge_t *br) { stp_tick(br); }
 
 /* ── Compute a socket path: dir + "/" + name ─────────────────── */
@@ -212,9 +215,13 @@ int main(int argc, char **argv) {
         }
     }
 
-    signal(SIGINT,sig_handler);
-    signal(SIGTERM,sig_handler);
-    signal(SIGPIPE,SIG_IGN);
+    signal(SIGINT,  sig_handler);
+    signal(SIGTERM, sig_handler);
+    signal(SIGHUP,  hup_handler);
+    signal(SIGPIPE, SIG_IGN);
+
+    /* Restore persistent state from previous run */
+    l2_persist_restore(fdb, vlan, br, lacp, NULL);
 
     fprintf(stderr,"[l2d] 9 modules ready\n");
 
@@ -236,8 +243,25 @@ int main(int argc, char **argv) {
     pthread_create(&t3,NULL,t_stp,  &sa);
     pthread_create(&t4,NULL,t_extra,&xa);
 
+    /* ── Management loop: SIGHUP checkpoint + config reload ── */
+    while (g_running) {
+        if (g_sighup) {
+            fprintf(stderr,"[l2d] SIGHUP: checkpointing + reloading...\n");
+            l2_persist_dump(fdb, vlan, br, lacp, NULL);
+            if (l2_cli_load_config(cfg) == 0)
+                apply_config(cfg, fdb, br);
+            g_sighup = 0;
+            fprintf(stderr,"[l2d] SIGHUP handled\n");
+        }
+        struct timespec _ts = {0, 100000000}; /* 100ms */
+        nanosleep(&_ts, NULL);
+    }
+
     pthread_join(t1,NULL); pthread_join(t2,NULL);
     pthread_join(t3,NULL); pthread_join(t4,NULL);
+
+    /* Dump on clean shutdown */
+    l2_persist_dump(fdb, vlan, br, lacp, NULL);
 
     free(fdb); free(l2rib); free(br);
     free(vlan); free(ps); free(storm); free(igmp); free(arp); free(lacp);

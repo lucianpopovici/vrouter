@@ -3,6 +3,7 @@
 #include "fib_cli.h"
 
 #include <stdio.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -113,26 +114,34 @@ static void handle_cmd(fib_table_t *fib, const char *req,
                 "{\"status\": \"miss\", \"addr\": \"%s\"}", addr);
         }
 
-    /* ── show ───────────────────────────────────────────────── */
+    /* ── show: walk hash buckets ────────────────────────────── */
     } else if (strcmp(cmd, "show") == 0) {
         size_t pos = 0;
-        pos += (size_t)snprintf(resp + pos, rsz - pos,
-            "{\"status\": \"ok\", \"count\": %d, \"routes\": [", fib->count);
-        for (int i = 0; i < fib->count && pos < rsz - 256; i++) {
-            const fib_entry_t *e = &fib->entries[i];
-            struct in_addr pfx_in = { htonl(e->prefix) };
-            struct in_addr nh_in  = { htonl(e->nexthop) };
-            char ps[INET_ADDRSTRLEN], ns[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &pfx_in, ps, sizeof(ps));
-            inet_ntop(AF_INET, &nh_in,  ns, sizeof(ns));
-            if (i > 0 && pos < rsz - 2) resp[pos++] = ',';
-            pos += (size_t)snprintf(resp + pos, rsz - pos,
-                "{\"prefix\": \"%s/%u\", \"nexthop\": \"%s\","
-                " \"iface\": \"%s\", \"metric\": %u, \"hits\": %llu}",
-                ps, e->prefix_len, ns, e->iface, e->metric,
-                (unsigned long long)e->hit_count);
+        int need_comma = 0;
+        pos += (size_t)snprintf(resp+pos, rsz-pos,
+            "{\"status\": \"ok\", \"count\": %d, \"routes\": [",
+            fib_count(fib));
+        pthread_rwlock_rdlock(&fib->lock);
+        for (uint32_t _b = 0; _b < fib->n_buckets && pos < rsz-256; _b++) {
+            const fib_entry_t *e = fib->buckets[_b];
+            while (e && pos < rsz-256) {
+                struct in_addr pi = { htonl(e->prefix) };
+                struct in_addr ni = { htonl(e->nexthop) };
+                char ps[INET_ADDRSTRLEN], ns[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &pi, ps, sizeof(ps));
+                inet_ntop(AF_INET, &ni, ns, sizeof(ns));
+                if (need_comma && pos < rsz-2) resp[pos++] = ',';
+                pos += (size_t)snprintf(resp+pos, rsz-pos,
+                    "{\"prefix\":\"%s/%u\",\"nexthop\":\"%s\"," \
+                    "\"iface\":\"%s\",\"metric\":%u,\"hits\":%llu}",
+                    ps, e->prefix_len, ns, e->iface, e->metric,
+                    (unsigned long long)e->hit_count);
+                need_comma = 1;
+                e = e->next;
+            }
         }
-        if (pos < rsz - 4) { resp[pos++]=']'; resp[pos++]='}'; resp[pos]='\0'; }
+        pthread_rwlock_unlock(&fib->lock);
+        if (pos < rsz-4) { resp[pos++]=']'; resp[pos++]='}'; resp[pos]='\0'; }
 
     /* ── flush ──────────────────────────────────────────────── */
     } else if (strcmp(cmd, "flush") == 0) {

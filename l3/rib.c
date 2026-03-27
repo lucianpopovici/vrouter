@@ -8,15 +8,12 @@
 #include <errno.h>
 
 /* ═══════════════════════════════════════════════════════════════
- * Hash function
- * Key: {prefix u32, prefix_len u8} — 5 bytes
- * FNV-1a: fast, good avalanche for network prefixes
+ * Hash: FNV-1a over {prefix u32, prefix_len u8}
  * ═══════════════════════════════════════════════════════════════ */
 static inline uint32_t rib_hash(uint32_t prefix, uint8_t len,
-                                 uint32_t n_buckets)
+                                  uint32_t n_buckets)
 {
     uint32_t h = 2166136261u;
-    /* fold prefix byte by byte */
     h ^= (prefix >> 24) & 0xFF; h *= 16777619u;
     h ^= (prefix >> 16) & 0xFF; h *= 16777619u;
     h ^= (prefix >>  8) & 0xFF; h *= 16777619u;
@@ -31,20 +28,20 @@ static inline uint32_t rib_hash(uint32_t prefix, uint8_t len,
 void rib_init(rib_table_t *rib)
 {
     memset(rib, 0, sizeof(*rib));
-    rib->n_buckets  = RIB_BUCKETS;
-    rib->pool_size  = RIB_POOL_DEFAULT;
-
-    rib->buckets = calloc(rib->n_buckets, sizeof(rib_entry_t *));
-    rib->pool    = calloc(rib->pool_size,  sizeof(rib_entry_t));
-
+    rib->n_buckets = RIB_BUCKETS;
+    rib->pool_size = RIB_POOL_DEFAULT;
+    rib->buckets   = calloc(rib->n_buckets, sizeof(rib_entry_t *));
+    rib->pool      = calloc(rib->pool_size,  sizeof(rib_entry_t));
     if (!rib->buckets || !rib->pool) {
         free(rib->buckets); free(rib->pool);
         rib->buckets = NULL; rib->pool = NULL;
     }
+    pthread_rwlock_init(&rib->lock, NULL);
 }
 
 void rib_destroy(rib_table_t *rib)
 {
+    pthread_rwlock_destroy(&rib->lock);
     free(rib->buckets);
     free(rib->pool);
     rib->buckets = NULL;
@@ -64,7 +61,7 @@ int rib_source_from_str(const char *s)
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * Pool allocator — O(1), no free list needed
+ * Pool allocator — O(1), caller must hold write lock
  * ═══════════════════════════════════════════════════════════════ */
 static rib_entry_t *pool_alloc(rib_table_t *rib)
 {
@@ -75,10 +72,10 @@ static rib_entry_t *pool_alloc(rib_table_t *rib)
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * Internal: find entry by prefix+len — O(1) average
+ * Internal: find entry — O(1) average, caller holds any lock
  * ═══════════════════════════════════════════════════════════════ */
-static rib_entry_t *entry_find(rib_table_t *rib,
-                                uint32_t prefix, uint8_t len)
+static rib_entry_t *entry_find_locked(rib_table_t *rib,
+                                       uint32_t prefix, uint8_t len)
 {
     if (!rib->buckets) return NULL;
     uint32_t idx = rib_hash(prefix, len, rib->n_buckets);
@@ -91,34 +88,7 @@ static rib_entry_t *entry_find(rib_table_t *rib,
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * Internal: get-or-create entry — O(1) average
- * ═══════════════════════════════════════════════════════════════ */
-static rib_entry_t *entry_get_or_create(rib_table_t *rib,
-                                         uint32_t prefix, uint8_t len)
-{
-    if (!rib->buckets) return NULL;
-    uint32_t idx = rib_hash(prefix, len, rib->n_buckets);
-    rib_entry_t *e = rib->buckets[idx];
-
-    while (e) {
-        if (e->prefix == prefix && e->prefix_len == len) return e;
-        rib->n_collisions++;  /* count chain traversals */
-        e = e->next;
-    }
-
-    /* allocate new entry and prepend to bucket chain */
-    e = pool_alloc(rib);
-    if (!e) return NULL;
-    e->prefix     = prefix;
-    e->prefix_len = len;
-    e->next       = rib->buckets[idx];
-    rib->buckets[idx] = e;
-    rib->count++;
-    return e;
-}
-
-/* ═══════════════════════════════════════════════════════════════
- * Best-route selection: lowest AD wins; ties broken by metric
+ * Best-route selection (no lock needed — caller holds at least rdlock)
  * ═══════════════════════════════════════════════════════════════ */
 const rib_candidate_t *rib_best(const rib_entry_t *entry)
 {
@@ -134,13 +104,12 @@ const rib_candidate_t *rib_best(const rib_entry_t *entry)
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * Reselect best candidate; fire callback if winner changed
+ * Reselect & fire callback — caller holds write lock
  * ═══════════════════════════════════════════════════════════════ */
-static void reselect(rib_table_t *rib, rib_entry_t *entry,
-                     const rib_candidate_t *old_best,
-                     rib_fib_cb cb, void *ctx)
+static void reselect_locked(rib_table_t *rib, rib_entry_t *entry,
+                              const rib_candidate_t *old_best,
+                              rib_fib_cb cb, void *ctx)
 {
-    /* clear all active flags */
     for (int i = 0; i < entry->n_candidates; i++)
         entry->candidates[i].active = 0;
 
@@ -161,7 +130,7 @@ static void reselect(rib_table_t *rib, rib_entry_t *entry,
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * rib_add — O(1) average
+ * rib_add — O(1) average, thread-safe
  * ═══════════════════════════════════════════════════════════════ */
 int rib_add(rib_table_t *rib,
             const char  *prefix_cidr,
@@ -182,10 +151,23 @@ int rib_add(rib_table_t *rib,
     if (source < 0 || source >= RIB_SRC_COUNT) source = RIB_SRC_UNKNOWN;
     if (ad == 0) ad = RIB_DEFAULT_AD[source];
 
-    rib_entry_t *entry = entry_get_or_create(rib, pfx, len);
-    if (!entry) return -ENOMEM;
+    int rc = 0;
+    pthread_rwlock_wrlock(&rib->lock);
 
-    /* snapshot old best before mutation */
+    /* get-or-create */
+    rib_entry_t *entry = entry_find_locked(rib, pfx, len);
+    if (!entry) {
+        entry = pool_alloc(rib);
+        if (!entry) { rc = -ENOMEM; goto out; }
+        entry->prefix     = pfx;
+        entry->prefix_len = len;
+        uint32_t idx = rib_hash(pfx, len, rib->n_buckets);
+        entry->next        = rib->buckets[idx];
+        rib->buckets[idx]  = entry;
+        rib->count++;
+    }
+
+    /* snapshot old best */
     rib_candidate_t old_snap;
     const rib_candidate_t *ob = rib_best(entry);
     int had = (ob != NULL);
@@ -198,31 +180,36 @@ int rib_add(rib_table_t *rib,
             c->metric     = metric;
             c->admin_dist = ad;
             if (iface && iface[0])
-                strncpy(c->iface, iface, FIB_IFACE_LEN - 1);
-            reselect(rib, entry, had ? &old_snap : NULL, cb, ctx);
+                strncpy(c->iface, iface, FIB_IFNAME_LEN - 1);
+            reselect_locked(rib, entry, had ? &old_snap : NULL, cb, ctx);
             rib->n_added++;
-            return 0;
+            goto out;
         }
     }
 
-    if (entry->n_candidates >= RIB_MAX_CANDIDATES) return -ENOSPC;
+    if (entry->n_candidates >= RIB_MAX_CANDIDATES) { rc = -ENOSPC; goto out; }
 
-    rib_candidate_t *c = &entry->candidates[entry->n_candidates++];
-    memset(c, 0, sizeof(*c));
-    c->nexthop    = nh;
-    c->metric     = metric;
-    c->source     = source;
-    c->admin_dist = ad;
-    if (iface && iface[0])
-        strncpy(c->iface, iface, FIB_IFACE_LEN - 1);
+    {
+        rib_candidate_t *c = &entry->candidates[entry->n_candidates++];
+        memset(c, 0, sizeof(*c));
+        c->nexthop    = nh;
+        c->metric     = metric;
+        c->source     = source;
+        c->admin_dist = ad;
+        if (iface && iface[0])
+            strncpy(c->iface, iface, FIB_IFNAME_LEN - 1);
+    }
 
-    reselect(rib, entry, had ? &old_snap : NULL, cb, ctx);
+    reselect_locked(rib, entry, had ? &old_snap : NULL, cb, ctx);
     rib->n_added++;
-    return 0;
+
+out:
+    pthread_rwlock_unlock(&rib->lock);
+    return rc;
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * rib_del — O(1) average
+ * rib_del — O(1) average, thread-safe
  * ═══════════════════════════════════════════════════════════════ */
 int rib_del(rib_table_t *rib,
             const char  *prefix_cidr,
@@ -239,8 +226,11 @@ int rib_del(rib_table_t *rib,
                     inet_pton(AF_INET, nexthop_str, &nh_in) == 1);
     if (match_nh) nh = ntohl(nh_in.s_addr);
 
-    rib_entry_t *entry = entry_find(rib, pfx, len);
-    if (!entry) return -ENOENT;
+    int rc = -ENOENT;
+    pthread_rwlock_wrlock(&rib->lock);
+
+    rib_entry_t *entry = entry_find_locked(rib, pfx, len);
+    if (!entry) goto out;
 
     rib_candidate_t old_snap;
     const rib_candidate_t *ob = rib_best(entry);
@@ -258,36 +248,42 @@ int rib_del(rib_table_t *rib,
             removed++;
         } else { i++; }
     }
-    if (!removed) return -ENOENT;
+    if (!removed) goto out;
 
-    reselect(rib, entry, had ? &old_snap : NULL, cb, ctx);
+    reselect_locked(rib, entry, had ? &old_snap : NULL, cb, ctx);
     rib->n_deleted += (uint64_t)removed;
+    rc = 0;
 
-    /* if no candidates left, remove entry from hash chain */
+    /* remove entry if no candidates remain */
     if (entry->n_candidates == 0) {
         uint32_t idx = rib_hash(pfx, len, rib->n_buckets);
         rib_entry_t **pp = &rib->buckets[idx];
         while (*pp && *pp != entry) pp = &(*pp)->next;
         if (*pp) { *pp = entry->next; rib->count--; }
-        /* entry slot returned to pool is wasted — acceptable
-           for a pool allocator; resize if needed */
     }
-    return 0;
+
+out:
+    pthread_rwlock_unlock(&rib->lock);
+    return rc;
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * rib_find — O(1) average
+ * rib_find — O(1) average, thread-safe (read lock)
  * ═══════════════════════════════════════════════════════════════ */
 const rib_entry_t *rib_find(const rib_table_t *rib,
                               const char *prefix_cidr)
 {
     uint32_t pfx; uint8_t len;
     if (fib_parse_cidr(prefix_cidr, &pfx, &len) != 0) return NULL;
-    return entry_find((rib_table_t *)rib, pfx, len);
+
+    pthread_rwlock_rdlock((pthread_rwlock_t *)&rib->lock);
+    rib_entry_t *e = entry_find_locked((rib_table_t *)rib, pfx, len);
+    pthread_rwlock_unlock((pthread_rwlock_t *)&rib->lock);
+    return e;
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * Human-readable dump
+ * Human-readable dump — takes read lock
  * ═══════════════════════════════════════════════════════════════ */
 void rib_entry_to_str(const rib_entry_t *e, char *buf, size_t sz)
 {

@@ -5,7 +5,7 @@ LDFLAGS = -pthread
 
 TARGET  = l2d
 SRCS    = main_l2.c fdb.c l2rib.c stp.c fdb_ipc.c l2rib_ipc.c stp_ipc.c l2_cli.c \
-          vlan.c portsec.c storm.c igmp.c arpsnoop.c lacp.c l2_ipc_extra.c
+          vlan.c portsec.c storm.c igmp.c arpsnoop.c lacp.c l2_ipc_extra.c l2_persist.c
 OBJS    = $(SRCS:.c=.o)
 
 .PHONY: all clean test

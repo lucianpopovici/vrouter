@@ -17,9 +17,7 @@
 
 /* pull in both modules */
 #include "../l3/fib.h"
-#include "../l3/fib.c"
 #include "../l2/fdb.h"
-#include "../l2/fdb.c"
 
 /* ── timing ────────────────────────────────────────────────── */
 static inline uint64_t now_ns(void) {

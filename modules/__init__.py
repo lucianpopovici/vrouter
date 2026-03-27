@@ -70,7 +70,11 @@ def _l3_adapter(keys, sock_names):
 
 
 def _bfd_adapter():
-    """Return a FileBasedAdapter for the BFD daemon (schema lives in /tmp)."""
+    """Return a FileBasedAdapter for the BFD module.
+
+    Schema: read from the project root (bfd_schema.json, committed alongside code).
+    Runtime overrides: read/written to /tmp/bfd_runtime_config.json (written by daemon).
+    """
     from modules.base import FileBasedAdapter
 
     class _Impl(FileBasedAdapter):
@@ -80,7 +84,9 @@ def _bfd_adapter():
                 os.path.join(_read_sock_dir(), "bfd.sock")
             )
 
-    return _Impl("/tmp", "bfd_schema.json", "bfd_runtime_config.json")
+    # Pass the schema as an absolute path so FileBasedAdapter's os.path.join
+    # ignores base_dir ("/tmp") for the schema and only uses it for runtime config.
+    return _Impl("/tmp", os.path.join(_DIR, "bfd_schema.json"), "bfd_runtime_config.json")
 
 
 def _stp_adapter():

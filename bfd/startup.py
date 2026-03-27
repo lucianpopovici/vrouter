@@ -34,35 +34,56 @@ def export_schema(path: str = SCHEMA_PATH) -> bool:
         "keys":    {},
     }
 
-    type_map = {
-        "DESIRED_MIN_TX_US":   "int",
-        "REQUIRED_MIN_RX_US":  "int",
-        "DETECT_MULT":         "int",
-        "MAX_SESSIONS":        "int",
-        "DEFAULT_AUTH_TYPE":   "str",
-        "ECHO_ENABLED":        "bool",
-        "LOG_LEVEL":           "str",
-        "LOG_STATE_CHANGES":   "bool",
-    }
-
-    desc_map = {
-        "DESIRED_MIN_TX_US":   "Desired minimum TX interval in microseconds",
-        "REQUIRED_MIN_RX_US":  "Required minimum RX interval in microseconds",
-        "DETECT_MULT":         "Detection time multiplier (1-255)",
-        "MAX_SESSIONS":        "Maximum number of BFD sessions (restart required)",
-        "DEFAULT_AUTH_TYPE":   "Default authentication type: none | md5 | sha1",
-        "ECHO_ENABLED":        "Enable BFD echo function",
-        "LOG_LEVEL":           "Log verbosity: DEBUG | INFO | WARNING | ERROR",
-        "LOG_STATE_CHANGES":   "Log every session state change",
+    key_meta = {
+        "DESIRED_MIN_TX_US":  {
+            "type": "int",  "description": "Desired minimum TX interval in microseconds",
+            "min": 10000,   "max": 60000000, "mandatory": True,  "group": "Timers",
+        },
+        "REQUIRED_MIN_RX_US": {
+            "type": "int",  "description": "Required minimum RX interval in microseconds",
+            "min": 10000,   "max": 60000000, "mandatory": True,  "group": "Timers",
+        },
+        "DETECT_MULT":        {
+            "type": "int",  "description": "Detection time multiplier (missed packets before session Down)",
+            "min": 1,       "max": 255,      "mandatory": True,  "group": "Timers",
+        },
+        "MAX_SESSIONS":       {
+            "type": "int",  "description": "Maximum number of concurrent BFD sessions (restart required)",
+            "min": 1,       "max": 1024,     "mandatory": False, "group": "Session",
+        },
+        "DEFAULT_AUTH_TYPE":  {
+            "type": "str",  "description": "Default authentication type: none | md5 | sha1",
+            "mandatory": False, "group": "Session",
+        },
+        "ECHO_ENABLED":       {
+            "type": "bool", "description": "Enable BFD echo function",
+            "mandatory": False, "group": "Session",
+        },
+        "LOG_LEVEL":          {
+            "type": "str",  "description": "Log verbosity: DEBUG | INFO | WARNING | ERROR",
+            "mandatory": False, "group": "Logging",
+        },
+        "LOG_STATE_CHANGES":  {
+            "type": "bool", "description": "Log every session state change",
+            "mandatory": False, "group": "Logging",
+        },
     }
 
     for key, default in DEFAULTS.items():
-        schema["keys"][key] = {
+        meta = key_meta.get(key, {})
+        entry = {
             "default":          default,
-            "type":             type_map.get(key, "str"),
-            "description":      desc_map.get(key, ""),
+            "type":             meta.get("type", "str"),
+            "description":      meta.get("description", ""),
+            "mandatory":        meta.get("mandatory", False),
+            "group":            meta.get("group", "Other"),
             "restart_required": key in RESTART_REQUIRED_KEYS,
         }
+        if "min" in meta:
+            entry["min"] = meta["min"]
+        if "max" in meta:
+            entry["max"] = meta["max"]
+        schema["keys"][key] = entry
 
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True) if os.path.dirname(path) else None

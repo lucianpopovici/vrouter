@@ -51,7 +51,7 @@ int cli_write_schema(void)
         "    }\n"
         "  }\n"
         "}\n",
-        FIB_MAX_ROUTES, FIB_DEFAULT_METRIC);
+        FIB_POOL_DEFAULT, FIB_DEFAULT_METRIC);
 
     fclose(f);
     return 0;

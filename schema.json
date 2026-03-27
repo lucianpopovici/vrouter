@@ -7,7 +7,7 @@
     "MAX_ROUTES": {
       "type": "int",
       "description": "Maximum number of FIB entries",
-      "default": 4096,
+      "default": 524288,
       "min": 10,
       "max": 100000,
       "mandatory": false,

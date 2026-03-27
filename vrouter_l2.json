@@ -1,0 +1,1 @@
+{"type":"stp","priority":32768,"hello":2,"max_age":20,"fwd_delay":15,"mode":"rstp","mst_region":"","mst_revision":0}

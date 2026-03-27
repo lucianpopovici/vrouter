@@ -3,7 +3,7 @@ CFLAGS  = -Wall -Wextra -Wpedantic -std=c99 -O2 -D_POSIX_C_SOURCE=200809L
 LDFLAGS = -pthread
 
 TARGET  = fibd
-SRCS    = main.c fib.c fib_cli.c fib_ipc.c rib.c rib_ipc.c
+SRCS    = main.c fib.c fib_cli.c fib_ipc.c rib.c rib_ipc.c persist.c
 OBJS    = $(SRCS:.c=.o)
 
 .PHONY: all clean test

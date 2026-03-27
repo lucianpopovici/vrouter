@@ -2,6 +2,7 @@
 #define RIB_H
 
 #include <stdint.h>
+#include <pthread.h>
 #include "fib.h"
 
 /* ─── Route sources & their default admin distances ─────────── */
@@ -41,7 +42,7 @@ static const char * const RIB_SRC_NAME[RIB_SRC_COUNT] = {
 /* ─── One candidate route ───────────────────────────────────── */
 typedef struct rib_candidate {
     uint32_t     nexthop;
-    char         iface[FIB_IFACE_LEN];
+    char         iface[FIB_IFNAME_LEN];
     uint32_t     metric;
     rib_source_t source;
     uint8_t      admin_dist;
@@ -66,6 +67,7 @@ typedef struct {
     uint32_t      pool_size;
     uint32_t      pool_used;
     int           count;
+    pthread_rwlock_t lock;
     uint64_t      n_added;
     uint64_t      n_deleted;
     uint64_t      n_fib_updates;

@@ -1,0 +1,1 @@
+{"prefix":"10.0.0.0/8","nexthop":"192.168.1.1","iface":"eth0","metric":1,"source":"static","ad":1}
