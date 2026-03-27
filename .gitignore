@@ -8,6 +8,8 @@ __pycache__/
 *.o
 
 claude
+l2/l2d
+l3/fibd
 
 # Distribution / packaging
 .Python
