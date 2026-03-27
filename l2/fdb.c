@@ -15,7 +15,7 @@ static uint32_t fdb_hash(const uint8_t mac[6], uint16_t vlan)
     return h & (FDB_BUCKETS - 1);
 }
 
-/* ─── Pool allocator ─────────────────────────────────────────── */
+/* ─── Pool allocator (caller must hold write lock) ───────────── */
 static fdb_entry_t *pool_alloc(fdb_table_t *fdb)
 {
     if (fdb->pool_used >= FDB_MAX_ENTRIES) return NULL;
@@ -29,6 +29,7 @@ void fdb_init(fdb_table_t *fdb)
 {
     memset(fdb, 0, sizeof(*fdb));
     fdb->age_sec = FDB_DEFAULT_AGE_SEC;
+    pthread_rwlock_init(&fdb->lock, NULL);
 }
 
 /* ─── MAC helpers ────────────────────────────────────────────── */
@@ -50,25 +51,28 @@ void fdb_mac_parse(const char *s, uint8_t mac[6])
 int fdb_learn(fdb_table_t *fdb, const uint8_t mac[6], uint16_t vlan,
               const char *port, uint32_t flags, uint32_t age_sec)
 {
-    uint32_t    idx = fdb_hash(mac, vlan);
-    fdb_entry_t *e  = fdb->buckets[idx];
-    time_t       now = time(NULL);
+    uint32_t    idx  = fdb_hash(mac, vlan);
+    time_t      now  = time(NULL);
+    int         rc   = 0;
+
+    pthread_rwlock_wrlock(&fdb->lock);
 
     /* update existing? */
+    fdb_entry_t *e = fdb->buckets[idx];
     while (e) {
         if (memcmp(e->mac, mac, 6) == 0 && e->vlan == vlan) {
             strncpy(e->port, port, FDB_IFNAME_LEN - 1);
             e->flags     = flags;
             e->last_seen = now;
             if (age_sec) e->age_sec = age_sec;
-            return 0;
+            goto out;
         }
         e = e->next;
     }
 
     /* allocate new */
     e = pool_alloc(fdb);
-    if (!e) return -ENOMEM;
+    if (!e) { rc = -ENOMEM; goto out; }
 
     memcpy(e->mac, mac, 6);
     e->vlan      = vlan;
@@ -78,53 +82,72 @@ int fdb_learn(fdb_table_t *fdb, const uint8_t mac[6], uint16_t vlan,
     e->hit_count = 0;
     strncpy(e->port, port, FDB_IFNAME_LEN - 1);
 
-    e->next            = fdb->buckets[idx];
-    fdb->buckets[idx]  = e;
+    e->next           = fdb->buckets[idx];
+    fdb->buckets[idx] = e;
     fdb->count++;
-    return 0;
+
+out:
+    pthread_rwlock_unlock(&fdb->lock);
+    return rc;
 }
 
 /* ─── Lookup ─────────────────────────────────────────────────── */
 const fdb_entry_t *fdb_lookup(fdb_table_t *fdb,
                                const uint8_t mac[6], uint16_t vlan)
 {
+    pthread_rwlock_rdlock(&fdb->lock);
+
     fdb->total_lookups++;
     uint32_t     idx = fdb_hash(mac, vlan);
     fdb_entry_t *e   = fdb->buckets[idx];
+
     while (e) {
         if (memcmp(e->mac, mac, 6) == 0 && e->vlan == vlan) {
             e->hit_count++;
             fdb->total_hits++;
+            pthread_rwlock_unlock(&fdb->lock);
             return e;
         }
         e = e->next;
     }
+
     fdb->total_misses++;
+    pthread_rwlock_unlock(&fdb->lock);
     return NULL;  /* miss → flood */
 }
 
 /* ─── Delete ─────────────────────────────────────────────────── */
 int fdb_delete(fdb_table_t *fdb, const uint8_t mac[6], uint16_t vlan)
 {
-    uint32_t     idx  = fdb_hash(mac, vlan);
-    fdb_entry_t **pp  = &fdb->buckets[idx];
+    uint32_t      idx = fdb_hash(mac, vlan);
+    int           rc  = -ENOENT;
+
+    pthread_rwlock_wrlock(&fdb->lock);
+
+    fdb_entry_t **pp = &fdb->buckets[idx];
     while (*pp) {
         fdb_entry_t *e = *pp;
         if (memcmp(e->mac, mac, 6) == 0 && e->vlan == vlan) {
             *pp = e->next;
             memset(e, 0, sizeof(*e));
             fdb->count--;
-            return 0;
+            rc = 0;
+            break;
         }
         pp = &e->next;
     }
-    return -ENOENT;
+
+    pthread_rwlock_unlock(&fdb->lock);
+    return rc;
 }
 
 /* ─── Flush helpers ─────────────────────────────────────────── */
 int fdb_flush_port(fdb_table_t *fdb, const char *port)
 {
     int removed = 0;
+
+    pthread_rwlock_wrlock(&fdb->lock);
+
     for (int i = 0; i < FDB_BUCKETS; i++) {
         fdb_entry_t **pp = &fdb->buckets[i];
         while (*pp) {
@@ -139,12 +162,17 @@ int fdb_flush_port(fdb_table_t *fdb, const char *port)
             }
         }
     }
+
+    pthread_rwlock_unlock(&fdb->lock);
     return removed;
 }
 
 int fdb_flush_vlan(fdb_table_t *fdb, uint16_t vlan)
 {
     int removed = 0;
+
+    pthread_rwlock_wrlock(&fdb->lock);
+
     for (int i = 0; i < FDB_BUCKETS; i++) {
         fdb_entry_t **pp = &fdb->buckets[i];
         while (*pp) {
@@ -159,15 +187,19 @@ int fdb_flush_vlan(fdb_table_t *fdb, uint16_t vlan)
             }
         }
     }
+
+    pthread_rwlock_unlock(&fdb->lock);
     return removed;
 }
 
 void fdb_flush_all(fdb_table_t *fdb)
 {
+    pthread_rwlock_wrlock(&fdb->lock);
     memset(fdb->buckets, 0, sizeof(fdb->buckets));
     memset(fdb->pool,    0, sizeof(fdb->pool));
     fdb->count     = 0;
     fdb->pool_used = 0;
+    pthread_rwlock_unlock(&fdb->lock);
 }
 
 /* ─── Age sweep ─────────────────────────────────────────────── */
@@ -175,6 +207,8 @@ int fdb_age_sweep(fdb_table_t *fdb)
 {
     time_t now     = time(NULL);
     int    removed = 0;
+
+    pthread_rwlock_wrlock(&fdb->lock);
 
     for (int i = 0; i < FDB_BUCKETS; i++) {
         fdb_entry_t **pp = &fdb->buckets[i];
@@ -192,5 +226,7 @@ int fdb_age_sweep(fdb_table_t *fdb)
             }
         }
     }
+
+    pthread_rwlock_unlock(&fdb->lock);
     return removed;
 }

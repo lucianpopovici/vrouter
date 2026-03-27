@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <time.h>
+#include <pthread.h>
 
 /* ─── Constants ─────────────────────────────────────────────── */
 #define FDB_BUCKETS         4096        /* must be power of 2        */
@@ -40,6 +41,7 @@ typedef struct fdb_table {
     /* entry pool */
     fdb_entry_t  pool[FDB_MAX_ENTRIES];
     int          pool_used;
+    pthread_rwlock_t lock;   /* protects entire table        */
 } fdb_table_t;
 
 /* ─── API ───────────────────────────────────────────────────── */

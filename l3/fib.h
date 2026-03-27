@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <netinet/in.h>
+#include <pthread.h>
 
 /* ─── Constants ─────────────────────────────────────────────── */
 #define FIB_MAX_ROUTES      4096
@@ -31,6 +32,7 @@ typedef struct fib_table {
     uint32_t    max_routes;   /* runtime-configurable  */
     uint64_t    total_lookups;
     uint64_t    total_hits;
+    pthread_rwlock_t lock;   /* protects entire table        */
 } fib_table_t;
 
 /* ─── API ───────────────────────────────────────────────────── */
