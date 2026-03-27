@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # Job 1: Build both daemons
+  # ──────────────────────────────────────────────────────────────
+  build:
+    name: Build (ubuntu-latest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc make netcat-openbsd
+
+      - name: Build L3 (fibd)
+        working-directory: l3
+        run: make -j$(nproc)
+
+      - name: Build L2 (l2d)
+        working-directory: l2
+        run: make -j$(nproc)
+
+      - name: Verify binaries exist
+        run: |
+          test -x l3/fibd && echo "✓ l3/fibd"
+          test -x l2/l2d  && echo "✓ l2/l2d"
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            l3/fibd
+            l2/l2d
+          retention-days: 1
+
+  # ──────────────────────────────────────────────────────────────
+  # Job 2: L3 functional tests
+  # ──────────────────────────────────────────────────────────────
+  test-l3:
+    name: Test L3 (RIB + FIB)
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y gcc make netcat-openbsd
+
+      - name: Build
+        working-directory: l3
+        run: make -j$(nproc)
+
+      - name: Run L3 tests
+        run: bash tests/test_l3.sh
+
+  # ──────────────────────────────────────────────────────────────
+  # Job 3: L2 functional tests
+  # ──────────────────────────────────────────────────────────────
+  test-l2:
+    name: Test L2 (FDB + STP + LACP + …)
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y gcc make netcat-openbsd
+
+      - name: Build
+        working-directory: l2
+        run: make -j$(nproc)
+
+      - name: Run L2 tests
+        run: bash tests/test_l2.sh
+
+  # ──────────────────────────────────────────────────────────────
+  # Job 4: Thread-safety stress test
+  # ──────────────────────────────────────────────────────────────
+  test-thread-safety:
+    name: Thread-safety stress (FIB + FDB)
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y gcc make
+
+      - name: Build
+        run: make -j$(nproc)
+
+      - name: Compile thread-safety test
+        run: |
+          gcc -O2 -std=c99 -D_POSIX_C_SOURCE=200809L -pthread \
+              -I l3 -I l2 \
+              -o /tmp/bench_thread tests/bench_thread.c
+
+      - name: Run thread-safety stress (5s)
+        run: timeout 30 /tmp/bench_thread
+
+  # ──────────────────────────────────────────────────────────────
+  # Job 5: Build with stricter flags (catches latent issues)
+  # ──────────────────────────────────────────────────────────────
+  build-strict:
+    name: Build (strict warnings as errors)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y gcc make
+
+      - name: Build L3 with -Werror
+        working-directory: l3
+        run: make -j$(nproc) CFLAGS="-Wall -Wextra -Wpedantic -std=c99 -O2 -D_POSIX_C_SOURCE=200809L -Werror"
+
+      - name: Build L2 with -Werror
+        working-directory: l2
+        run: make -j$(nproc) CFLAGS="-Wall -Wextra -std=c99 -O2 -D_POSIX_C_SOURCE=200809L -Wno-unused-function -Werror"
+
+  # ──────────────────────────────────────────────────────────────
+  # Job 6: Build matrix (gcc versions + clang)
+  # ──────────────────────────────────────────────────────────────
+  build-matrix:
+    name: Build (${{ matrix.compiler }})
+    runs-on: ubuntu-latest
+    needs: build
+
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ${{ matrix.compiler }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ${{ matrix.compiler }} make
+
+      - name: Build L3
+        working-directory: l3
+        run: make -j$(nproc) CC=${{ matrix.compiler }}
+
+      - name: Build L2
+        working-directory: l2
+        run: make -j$(nproc) CC=${{ matrix.compiler }}

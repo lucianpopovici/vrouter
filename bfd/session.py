@@ -9,6 +9,7 @@ import logging
 import os
 import random
 import socket
+import struct
 import threading
 import time
 from dataclasses import dataclass, field
@@ -104,6 +105,12 @@ class BFDSession:
         # Locked TX interval during an active Poll Sequence (RFC 5880 §6.8.3)
         self._scheduled_tx_us: Optional[int] = None
 
+        # RFC 5880 §6.6: suppress periodic TX when remote asserts Demand mode
+        self._remote_demand: bool = False
+
+        # RFC 5881 §5: TX source port, set after socket bind
+        self._tx_src_port: Optional[int] = None
+
         # Threading
         self._lock      = threading.Lock()
         self._stop_evt  = threading.Event()
@@ -124,8 +131,15 @@ class BFDSession:
 
     @property
     def detect_time_us(self) -> int:
-        """Detection time = remote_detect_mult × negotiated_tx."""
-        return self.remote_detect_mult * self.negotiated_tx_us
+        """
+        Local detection time (RFC 5880 §6.8.4):
+          remote_detect_mult × max(remote_desired_min_tx_us, required_min_rx_us)
+
+        This is the rate the remote will actually TX at (both sides agree),
+        multiplied by how many missed packets trigger a failure.
+        """
+        remote_tx_us = max(self.remote_desired_min_tx_us, self.required_min_rx_us)
+        return self.remote_detect_mult * remote_tx_us
 
     # ── State machine ─────────────────────────────────────────────────────────
 
@@ -202,6 +216,7 @@ class BFDSession:
             self.remote_desired_min_tx_us  = pkt.desired_min_tx_us
             self.remote_required_min_rx_us = pkt.required_min_rx_us
             self.remote_detect_mult        = pkt.detect_mult
+            self._remote_demand            = pkt.demand  # RFC 5880 §6.6
 
             # ── Final flag: completes our own Poll Sequence (RFC 5880 §6.5) ───
             if pkt.final and self._poll_active:
@@ -277,19 +292,27 @@ class BFDSession:
         """Create and configure the TX socket."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # RFC 5881: TTL must be 255
+        # RFC 5881 §5: TTL must be 255
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, 255)
-        if self.local_ip != "0.0.0.0":
-            try:
-                sock.bind((self.local_ip, 0))
-            except OSError as e:
-                logger.warning("[BFD %s] bind failed: %s", self.peer_ip, e)
+        # RFC 5881 §5: source port must be in 49152–65535
+        bind_ip   = self.local_ip if self.local_ip != "0.0.0.0" else ""
+        src_port  = random.randint(49152, 65535)
+        try:
+            sock.bind((bind_ip, src_port))
+            self._tx_src_port = src_port
+        except OSError as e:
+            logger.warning("[BFD %s] TX bind (port %d) failed: %s", self.peer_ip, src_port, e)
         return sock
 
     def _make_rx_socket(self) -> socket.socket:
         """Create and configure the RX socket. Raises OSError on bind failure."""
         rx_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         rx_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # RFC 5881 §4: enable receiving TTL so we can validate it is 255
+        try:
+            rx_sock.setsockopt(socket.IPPROTO_IP, socket.IP_RECVTTL, 1)
+        except OSError:
+            pass  # not available on all platforms
         rx_sock.settimeout(1.0)
         bind_ip = self.local_ip if self.local_ip != "0.0.0.0" else ""
         rx_sock.bind((bind_ip, BFD_CONTROL_PORT))
@@ -308,9 +331,12 @@ class BFDSession:
             with self._lock:
                 # RFC 5880 §6.8.7: passive role must not TX until first packet received
                 # RFC 5880 §6.8.7: must not TX if remote requires no packets (min-rx = 0)
+                # RFC 5880 §6.6: suppress periodic TX when remote is in Demand mode,
+                #   unless we have an active Poll Sequence (poll=True)
                 should_tx = (
                     (self._active_role or self._last_rx is not None)
                     and self.remote_required_min_rx_us != 0
+                    and (not self._remote_demand or self._poll)
                 )
 
                 if should_tx:
@@ -343,19 +369,25 @@ class BFDSession:
                 hi = 0.90 if self.detect_mult == 1 else 1.00
                 tx_interval_s = (base_us / 1_000_000) * random.uniform(0.75, hi)
 
-                # Detect timeout while UP
+                # Detect timeout in Up and Init states (3.1, 3.2)
                 if (
-                    self._state == BFDState.UP
+                    self._state in (BFDState.UP, BFDState.INIT)
                     and self._last_rx is not None
                     and (time.monotonic() - self._last_rx) > (self.detect_time_us / 1_000_000)
                 ):
                     self._transition(BFDState.DOWN, diag=1)  # Control Detection Time Expired
 
             if pkt_to_send is not None:
+                had_final = pkt_to_send.final
                 try:
                     sock.sendto(pkt_to_send.encode(), (self.peer_ip, BFD_CONTROL_PORT))
                 except OSError as e:
                     logger.debug("[BFD %s] TX error: %s", self.peer_ip, e)
+                    # 7.2: Final flag was already cleared under the lock; restore it so
+                    # the next TX attempt will still deliver the Final to the remote.
+                    if had_final:
+                        with self._lock:
+                            self._final = True
 
             self._stop_evt.wait(timeout=tx_interval_s)
 
@@ -371,11 +403,27 @@ class BFDSession:
             logger.error("[BFD %s] Cannot bind RX socket: %s", self.peer_ip, e)
             return
 
+        # CMSG buffer large enough for an int (TTL)
+        cmsg_buf = socket.CMSG_SPACE(struct.calcsize("i"))
+
         while not self._stop_evt.is_set():
             try:
-                data, addr = rx_sock.recvfrom(1024)
+                data, ancdata, _flags, addr = rx_sock.recvmsg(1024, cmsg_buf)
                 if addr[0] != self.peer_ip:
                     continue
+
+                # RFC 5881 §4: discard packets whose TTL is not 255
+                ttl = None
+                for cmsg_level, cmsg_type, cmsg_data in ancdata:
+                    if cmsg_level == socket.IPPROTO_IP and cmsg_type == socket.IP_TTL:
+                        ttl = struct.unpack("i", cmsg_data[:4])[0]
+                        break
+                if ttl is not None and ttl != 255:
+                    logger.debug(
+                        "[BFD %s] drop: TTL=%d (expected 255)", self.peer_ip, ttl
+                    )
+                    continue
+
                 pkt = BFDPacket.decode(data)
                 if pkt:
                     self.rx_packet(pkt)
@@ -388,8 +436,36 @@ class BFDSession:
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    def start(self):
-        """Start TX and RX threads."""
+    def start(self, rx: bool = True):
+        """Start TX thread and optionally the per-session RX thread.
+
+        Pass rx=False when a shared RX socket (e.g. in BFDSessionManager) will
+        dispatch received packets via rx_packet() instead.
+        """
+        self._stop_evt.clear()
+        self._tx_thread = threading.Thread(
+            target=self._tx_loop, name=f"bfd-tx-{self.peer_ip}", daemon=True
+        )
+        self._tx_thread.start()
+        if rx:
+            self._rx_thread = threading.Thread(
+                target=self._rx_loop, name=f"bfd-rx-{self.peer_ip}", daemon=True
+            )
+            self._rx_thread.start()
+        logger.info("[BFD %s] Session started (disc=%#010x)", self.peer_ip, self.local_disc)
+
+    def resume(self) -> bool:
+        """Re-enable a session that was administratively shut down (RFC 5880 §6.2).
+
+        Transitions from ADMIN_DOWN back to DOWN and restarts the threads.
+        Returns True if the session was resumed, False if not in ADMIN_DOWN.
+        """
+        with self._lock:
+            if self._state != BFDState.ADMIN_DOWN:
+                return False
+            self._state             = BFDState.DOWN
+            self._diag              = 0
+            self._last_state_change = time.monotonic()
         self._stop_evt.clear()
         self._tx_thread = threading.Thread(
             target=self._tx_loop, name=f"bfd-tx-{self.peer_ip}", daemon=True
@@ -399,7 +475,8 @@ class BFDSession:
         )
         self._tx_thread.start()
         self._rx_thread.start()
-        logger.info("[BFD %s] Session started (disc=%#010x)", self.peer_ip, self.local_disc)
+        logger.info("[BFD %s] Session resumed", self.peer_ip)
+        return True
 
     def stop(self, admin_down: bool = True):
         """Stop the session gracefully."""

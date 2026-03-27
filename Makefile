@@ -119,6 +119,7 @@ status:
 	  else \
 	    echo "  $$s  (absent)"; \
 	  fi; \
+	  echo ""; \
 	done
 	@echo ""
 	@echo "=== L2 sockets (SOCK_DIR=$(SOCK_DIR)) ==="
@@ -133,6 +134,7 @@ status:
 	  else \
 	    echo "  $$s  (absent)"; \
 	  fi; \
+	  echo ""; \
 	done
 
 # ================================================================
@@ -158,6 +160,7 @@ test-l2: run-l2
 	           /tmp/l2igmp.sock /tmp/l2arp.sock /tmp/l2lacp.sock; do \
 	  printf "  %-24s  " "$$s"; \
 	  echo '{"cmd":"ping"}' | nc -U "$$s" -w1 2>/dev/null || echo "FAILED"; \
+	  echo ""; \
 	done
 	@pkill -x l2d 2>/dev/null; echo "=== L2 test done ==="
 

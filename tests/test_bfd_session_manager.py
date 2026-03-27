@@ -2,7 +2,7 @@
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 from bfd.session_manager import BFDSessionManager
 from bfd.config import BFDConfig
 
@@ -153,3 +153,77 @@ class TestStopAll:
         manager.add("10.0.0.2")
         manager.stop_all()
         assert manager.count() == 0
+
+
+class TestDiscriminatorIndex:
+    def test_by_disc_populated_on_add(self, manager, mock_session):
+        manager.add("10.0.0.1")
+        disc = mock_session.return_value.local_disc
+        assert manager.get_by_disc(disc) is not None
+
+    def test_by_disc_removed_on_remove(self, manager, mock_session):
+        manager.add("10.0.0.1")
+        disc = mock_session.return_value.local_disc
+        manager.remove("10.0.0.1")
+        assert manager.get_by_disc(disc) is None
+
+    def test_get_by_disc_returns_none_for_unknown(self, manager):
+        assert manager.get_by_disc(0xDEAD1234) is None
+
+    def test_disc_collision_resolved(self, tmp_path):
+        """If two sessions share a discriminator, it should be regenerated."""
+        import random as _random
+
+        with patch("bfd.session_manager.BFDSession") as MockSession:
+            # First session gets disc 0x1111
+            first  = MagicMock()
+            first.local_disc  = 0x1111
+            first.local_ip    = "0.0.0.0"
+            first.desired_min_tx_us  = 300000
+            first.required_min_rx_us = 300000
+            first.detect_mult = 3
+
+            # Second session initially gets the same disc, then a unique one
+            second = MagicMock()
+            second.local_disc = 0x1111   # collision
+            second.local_ip   = "0.0.0.0"
+            second.desired_min_tx_us  = 300000
+            second.required_min_rx_us = 300000
+            second.detect_mult = 3
+
+            MockSession.side_effect = [first, second]
+
+            # Patch random.randint so the collision-resolution gives 0x2222
+            with patch("bfd.session_manager.random.randint", return_value=0x2222):
+                mgr = BFDSessionManager(
+                    cfg=BFDConfig(),
+                    sessions_file=str(tmp_path / "s.json"),
+                )
+                mgr.add("10.0.0.1")
+                mgr.add("10.0.0.2")
+
+            # second.local_disc was reassigned to 0x2222 by the manager
+            assert second.local_disc == 0x2222
+            assert mgr.get_by_disc(0x1111) is first
+            assert mgr.get_by_disc(0x2222) is second
+
+
+class TestStartCalledWithRxFalse:
+    def test_start_called_with_rx_false_when_shared_rx_running(self, tmp_path, mock_session):
+        """When the shared RX thread is active, sessions are started without per-session RX."""
+        mgr = BFDSessionManager(
+            cfg=BFDConfig(),
+            sessions_file=str(tmp_path / "s.json"),
+        )
+        # Simulate shared RX already running
+        fake_thread = MagicMock()
+        fake_thread.is_alive.return_value = True
+        mgr._rx_thread = fake_thread
+
+        mgr.add("10.0.0.1")
+        mock_session.return_value.start.assert_called_once_with(rx=False)
+
+    def test_start_called_with_rx_true_when_no_shared_rx(self, manager, mock_session):
+        """When no shared RX thread exists, sessions manage their own RX socket."""
+        manager.add("10.0.0.1")
+        mock_session.return_value.start.assert_called_once_with(rx=True)

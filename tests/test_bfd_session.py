@@ -64,10 +64,18 @@ class TestNegotiatedValues:
         assert sess.negotiated_tx_us == 500000
 
     def test_detect_time(self):
-        sess = make_session(desired_min_tx_us=300000)
-        sess.remote_required_min_rx_us = 300000
+        # detect_time = remote_detect_mult × max(remote_desired_min_tx_us, required_min_rx_us)
+        sess = make_session(required_min_rx_us=300000)
+        sess.remote_desired_min_tx_us = 300000
         sess.remote_detect_mult = 3
         assert sess.detect_time_us == 900000
+
+    def test_detect_time_uses_larger_of_remote_tx_and_local_rx(self):
+        sess = make_session(required_min_rx_us=500000)
+        sess.remote_desired_min_tx_us = 100000  # remote TX slower than our RX floor
+        sess.remote_detect_mult = 3
+        # max(100000, 500000) * 3 = 1500000
+        assert sess.detect_time_us == 1500000
 
 
 # ── State machine transitions ─────────────────────────────────────────────────
@@ -361,3 +369,55 @@ class TestPollSequence:
         final_pkt.final = True
         sess.rx_packet(final_pkt)
         assert sess._poll_active is False  # unchanged
+
+
+# ── Demand mode (RFC 5880 §6.6) ───────────────────────────────────────────────
+
+class TestDemandMode:
+    def test_demand_bit_tracked(self):
+        sess = make_session()
+        p = pkt(state=BFDState.DOWN)
+        p.demand = True
+        sess.rx_packet(p)
+        assert sess._remote_demand is True
+
+    def test_demand_cleared_when_not_set(self):
+        sess = make_session()
+        p = pkt(state=BFDState.DOWN)
+        p.demand = True
+        sess.rx_packet(p)
+        # Next packet without demand clears it
+        sess.rx_packet(pkt(state=BFDState.DOWN))
+        assert sess._remote_demand is False
+
+
+# ── Resume (RFC 5880 §6.2) ────────────────────────────────────────────────────
+
+class TestResume:
+    def test_resume_from_admin_down(self):
+        sess = make_session()
+        with sess._lock:
+            from bfd.session import BFDState as S
+            sess._state = S.ADMIN_DOWN
+        # resume() should transition to DOWN without starting real threads
+        # We patch start to avoid actual socket creation
+        sess._tx_thread = None
+        sess._rx_thread = None
+        # Just test the state transition part by calling resume() after setting stop_evt
+        sess._stop_evt.set()  # will cause threads to stop immediately if they start
+        result = sess.resume()
+        assert result is True
+        assert sess.state == BFDState.DOWN
+
+    def test_resume_returns_false_when_not_admin_down(self):
+        sess = make_session()
+        assert sess.state == BFDState.DOWN
+        result = sess.resume()
+        assert result is False
+        assert sess.state == BFDState.DOWN  # unchanged
+
+    def test_resume_returns_false_when_up(self):
+        sess = make_session()
+        sess.rx_packet(pkt(state=BFDState.INIT, your_disc=sess.local_disc))
+        assert sess.state == BFDState.UP
+        assert sess.resume() is False
