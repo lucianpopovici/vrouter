@@ -30,7 +30,7 @@ check() {
         FAIL=$((FAIL+1))
     fi
 }
-
+rm -f vrouter_routes.json
 # ── start daemon ─────────────────────────────────────────────────
 echo "=== L3 Tests ==="
 echo "    socket dir: $SOCK_DIR"
@@ -51,7 +51,7 @@ echo ""
 echo "--- Ping ---"
 check "FIB ping"  fibd.sock '{"cmd":"ping"}' 'fib'
 check "RIB ping"  ribd.sock '{"cmd":"ping"}' 'rib'
-
+rm -f vrouter_routes.json
 # ── RIB → FIB pipeline ───────────────────────────────────────────
 echo ""
 echo "--- RIB → FIB pipeline ---"
