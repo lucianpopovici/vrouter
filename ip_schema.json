@@ -1,0 +1,21 @@
+{
+  "module": "ip",
+  "version": "1.0",
+  "commands": [
+    {"cmd": "add_addr", "args": {"ifindex": "int", "prefix": "str", "valid_lft": "int", "pref_lft": "int"}},
+    {"cmd": "del_addr", "args": {"ifindex": "int", "prefix": "str"}},
+    {"cmd": "list_addrs", "args": {"ifindex": "int (optional, -1=all)"}},
+    {"cmd": "list_interfaces", "args": {}},
+    {"cmd": "add_route", "args": {"prefix": "str", "nexthop": "str", "ifindex": "int", "ad": "int", "metric": "int"}},
+    {"cmd": "del_route", "args": {"prefix": "str"}},
+    {"cmd": "list_routes", "args": {"af": "ipv4|ipv6 (optional)"}},
+    {"cmd": "lookup", "args": {"dst": "str"}},
+    {"cmd": "set_forwarding", "args": {"af": "ipv4|ipv6", "enable": "bool"}},
+    {"cmd": "get_forwarding", "args": {}},
+    {"cmd": "set_if_fwd", "args": {"ifindex": "int", "af": "ipv4|ipv6", "enable": "bool"}},
+    {"cmd": "get_stats", "args": {"af": "ipv4|ipv6"}},
+    {"cmd": "clear_stats", "args": {"af": "ipv4|ipv6"}},
+    {"cmd": "dump_config", "args": {"path": "str (optional)"}},
+    {"cmd": "load_config", "args": {"path": "str (optional)"}}
+  ]
+}

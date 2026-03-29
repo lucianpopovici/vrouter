@@ -9,12 +9,12 @@
 #include "lacp.h"
 
 /* Default socket basenames */
-#define VLAN_SOCK_NAME     "l2vlan.sock"
-#define PORTSEC_SOCK_NAME  "l2portsec.sock"
-#define STORM_SOCK_NAME    "l2storm.sock"
-#define IGMP_SOCK_NAME     "l2igmp.sock"
-#define ARP_SOCK_NAME      "l2arp.sock"
-#define LACP_SOCK_NAME     "l2lacp.sock"
+#define VLAN_SOCK_NAME     "vlan.sock"
+#define PORTSEC_SOCK_NAME  "portsec.sock"
+#define STORM_SOCK_NAME    "storm.sock"
+#define IGMP_SOCK_NAME     "igmp.sock"
+#define ARP_SOCK_NAME      "arp.sock"
+#define LACP_SOCK_NAME     "lacp.sock"
 
 /* Runtime paths (filled in at startup from sock_dir) */
 typedef struct {

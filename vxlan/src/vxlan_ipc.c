@@ -338,6 +338,7 @@ char *vxlan_ipc_handle(vxlan_ctx_t *ctx, const char *req, size_t req_len)
         char path[256]="vxlan_runtime.json"; jstr(req,"path",path,sizeof(path));
         return vxlan_load_config(ctx,path)==VXLAN_OK?ok():err("load failed");
     }
+    if (!strcmp(cmd,"ping")) return strdup("{\"status\":\"ok\",\"msg\":\"pong\",\"module\":\"vxlan\"}\n");
     return err("unknown command");
 }
 

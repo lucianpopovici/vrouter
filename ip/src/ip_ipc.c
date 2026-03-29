@@ -459,6 +459,7 @@ char *ip_ipc_handle(ip_ctx_t *ctx, const char *req, size_t req_len)
         jstr(req,"path",path,sizeof(path));
         return ip_load_config(ctx,path)==IP_OK ? ok_json() : err_json("load failed");
     }
+    if (!strcmp(cmd,"ping")) return strdup("{\"status\":\"ok\",\"msg\":\"pong\",\"module\":\"ip\"}\n");
     return err_json("unknown command");
 }
 

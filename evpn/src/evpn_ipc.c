@@ -630,6 +630,7 @@ char *evpn_ipc_handle(evpn_ctx_t *ctx, const char *req, size_t req_len)
         jstr(req, "path", path, sizeof(path));
         return evpn_load_config(ctx, path) == EVPN_OK ? ok() : err("load failed");
     }
+    if (!strcmp(cmd, "ping")) return strdup("{\"status\":\"ok\",\"msg\":\"pong\",\"module\":\"evpn\"}\n");
     return err("unknown command");
 }
 

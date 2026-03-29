@@ -1,0 +1,1 @@
+{"type":"fwd_config","ipv4_fwd":true,"ipv6_fwd":true,"flags":10,"default_ttl":64,"default_hop_limit":64,"ecmp_hash_mode":3}

@@ -115,7 +115,7 @@ static char *h_bind_if(vrf_ctx_t *ctx,const char *req){
     long long id=jll(req,"vrf_id"),ifidx=jll(req,"ifindex");
     if (id<0||ifidx<0) return err_json("missing vrf_id or ifindex");
     char ifname[IFNAMSIZ]={0}; jstr(req,"ifname",ifname,sizeof(ifname));
-    if (!ifname[0]) snprintf(ifname,sizeof(ifname),"if%lld",ifidx);
+    if (!ifname[0]) snprintf(ifname,sizeof(ifname),"if%u",(uint32_t)ifidx);
     int rc=vrf_bind_if(ctx,(uint32_t)id,(uint32_t)ifidx,ifname);
     if (rc==VRF_ERR_NOTFOUND) return err_json("VRF not found");
     if (rc==VRF_ERR_BOUND)    return err_json("already bound");
@@ -389,6 +389,7 @@ char *vrf_ipc_handle(vrf_ctx_t *ctx,const char *req,size_t req_len){
     if (!strcmp(cmd,VRF_CMD_LOAD_CONFIG)){
         char path[256]="vrf_runtime_config.json"; jstr(req,"path",path,sizeof(path));
         return vrf_load_config(ctx,path)==VRF_OK?ok_json():err_json("load failed");}
+    if (!strcmp(cmd,"ping")) return strdup("{\"status\":\"ok\",\"msg\":\"pong\",\"module\":\"vrf\"}\n");
     return err_json("unknown command");}
 
 int vrf_ipc_init(vrf_ctx_t *ctx){
