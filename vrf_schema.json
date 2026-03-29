@@ -1,25 +1,11 @@
 {
   "module": "vrf",
   "version": "1.0",
-  "commands": [
-    {"cmd": "create_vrf", "args": {"id": "int", "name": "str", "flags": "int", "table_id": "int", "rd": "int"}},
-    {"cmd": "delete_vrf", "args": {"id": "int"}},
-    {"cmd": "list_vrfs", "args": {}},
-    {"cmd": "get_vrf", "args": {"id": "int (or name: str)"}},
-    {"cmd": "bind_interface", "args": {"vrf_id": "int", "ifindex": "int", "ifname": "str"}},
-    {"cmd": "unbind_interface", "args": {"ifindex": "int"}},
-    {"cmd": "list_interfaces", "args": {"vrf_id": "int (optional, -1=all)"}},
-    {"cmd": "get_if_vrf", "args": {"ifindex": "int"}},
-    {"cmd": "add_route", "args": {"vrf_id": "int", "prefix": "str", "nexthop": "str", "ifindex": "int", "ad": "int", "metric": "int"}},
-    {"cmd": "del_route", "args": {"vrf_id": "int", "prefix": "str"}},
-    {"cmd": "list_routes", "args": {"vrf_id": "int (optional)", "af": "ipv4|ipv6 (optional)"}},
-    {"cmd": "lookup", "args": {"vrf_id": "int", "dst": "str"}},
-    {"cmd": "leak_route", "args": {"src_vrf_id": "int", "dst_vrf_id": "int", "prefix": "str", "nexthop": "str", "ifindex": "int", "metric": "int"}},
-    {"cmd": "unleak_route", "args": {"src_vrf_id": "int", "dst_vrf_id": "int", "prefix": "str"}},
-    {"cmd": "list_leaks", "args": {"vrf_id": "int (optional)"}},
-    {"cmd": "get_stats", "args": {"vrf_id": "int"}},
-    {"cmd": "clear_stats", "args": {"vrf_id": "int"}},
-    {"cmd": "dump_config", "args": {"path": "str (optional)"}},
-    {"cmd": "load_config", "args": {"path": "str (optional)"}}
-  ]
+  "keys": {
+    "ECMP_HASH_MODE": {
+      "type": "int", "description": "Global ECMP hash field bitmask for new VRF instances (1=src_ip 2=dst_ip 4=src_port 8=dst_port 16=proto)",
+      "default": 3, "min": 0, "max": 31,
+      "mandatory": false, "group": "ECMP"
+    }
+  }
 }

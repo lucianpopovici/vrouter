@@ -630,6 +630,19 @@ char *evpn_ipc_handle(evpn_ctx_t *ctx, const char *req, size_t req_len)
         jstr(req, "path", path, sizeof(path));
         return evpn_load_config(ctx, path) == EVPN_OK ? ok() : err("load failed");
     }
+    if (!strcmp(cmd,"get")) {
+        char key[64]={0}; jstr(req,"key",key,sizeof(key));
+        char *buf=malloc(128);
+        if (!strcmp(key,"LOCAL_ASN")) {
+            snprintf(buf,128,"{\"status\":\"ok\",\"value\":\"%u\"}\n",ctx->local_asn);
+        } else if (!strcmp(key,"LOCAL_VTEP")) {
+            char ip_s[INET6_ADDRSTRLEN]={0};
+            evpn_addr_to_str(&ctx->local_vtep_ip,ip_s,sizeof(ip_s));
+            snprintf(buf,128,"{\"status\":\"ok\",\"value\":\"%s\"}\n",ip_s);
+        } else { free(buf); return err("unknown key"); }
+        return buf;
+    }
+    if (!strcmp(cmd,"set")) return err("read-only: use daemon flags to change LOCAL_ASN/LOCAL_VTEP");
     if (!strcmp(cmd, "ping")) return strdup("{\"status\":\"ok\",\"msg\":\"pong\",\"module\":\"evpn\"}\n");
     return err("unknown command");
 }

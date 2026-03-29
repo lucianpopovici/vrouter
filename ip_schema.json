@@ -1,21 +1,26 @@
 {
   "module": "ip",
   "version": "1.0",
-  "commands": [
-    {"cmd": "add_addr", "args": {"ifindex": "int", "prefix": "str", "valid_lft": "int", "pref_lft": "int"}},
-    {"cmd": "del_addr", "args": {"ifindex": "int", "prefix": "str"}},
-    {"cmd": "list_addrs", "args": {"ifindex": "int (optional, -1=all)"}},
-    {"cmd": "list_interfaces", "args": {}},
-    {"cmd": "add_route", "args": {"prefix": "str", "nexthop": "str", "ifindex": "int", "ad": "int", "metric": "int"}},
-    {"cmd": "del_route", "args": {"prefix": "str"}},
-    {"cmd": "list_routes", "args": {"af": "ipv4|ipv6 (optional)"}},
-    {"cmd": "lookup", "args": {"dst": "str"}},
-    {"cmd": "set_forwarding", "args": {"af": "ipv4|ipv6", "enable": "bool"}},
-    {"cmd": "get_forwarding", "args": {}},
-    {"cmd": "set_if_fwd", "args": {"ifindex": "int", "af": "ipv4|ipv6", "enable": "bool"}},
-    {"cmd": "get_stats", "args": {"af": "ipv4|ipv6"}},
-    {"cmd": "clear_stats", "args": {"af": "ipv4|ipv6"}},
-    {"cmd": "dump_config", "args": {"path": "str (optional)"}},
-    {"cmd": "load_config", "args": {"path": "str (optional)"}}
-  ]
+  "keys": {
+    "IPV4_FWD": {
+      "type": "str", "description": "Enable global IPv4 packet forwarding",
+      "default": "true", "choices": ["true", "false"],
+      "mandatory": false, "group": "Forwarding"
+    },
+    "IPV6_FWD": {
+      "type": "str", "description": "Enable global IPv6 packet forwarding",
+      "default": "true", "choices": ["true", "false"],
+      "mandatory": false, "group": "Forwarding"
+    },
+    "ECMP_HASH_MODE": {
+      "type": "int", "description": "ECMP hash field bitmask (1=src_ip 2=dst_ip 4=src_port 8=dst_port 16=proto)",
+      "default": 3, "min": 0, "max": 31,
+      "mandatory": false, "group": "ECMP"
+    },
+    "DEFAULT_TTL": {
+      "type": "int", "description": "Default TTL for originated IPv4 packets",
+      "default": 64, "min": 1, "max": 255,
+      "mandatory": false, "group": "Forwarding"
+    }
+  }
 }

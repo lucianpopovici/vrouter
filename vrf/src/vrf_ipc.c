@@ -389,6 +389,21 @@ char *vrf_ipc_handle(vrf_ctx_t *ctx,const char *req,size_t req_len){
     if (!strcmp(cmd,VRF_CMD_LOAD_CONFIG)){
         char path[256]="vrf_runtime_config.json"; jstr(req,"path",path,sizeof(path));
         return vrf_load_config(ctx,path)==VRF_OK?ok_json():err_json("load failed");}
+    if (!strcmp(cmd,"get")){
+        char key[64]=""; jstr(req,"key",key,sizeof(key));
+        if (!strcmp(key,"ECMP_HASH_MODE")){
+            char *buf=malloc(64);
+            snprintf(buf,64,"{\"status\":\"ok\",\"value\":%u}\n",ctx->ecmp_hash_mode);
+            return buf;}
+        return err_json("unknown key");}
+    if (!strcmp(cmd,"set")){
+        char key[64]=""; jstr(req,"key",key,sizeof(key));
+        if (!strcmp(key,"ECMP_HASH_MODE")){
+            long long v=jll(req,"value");
+            if (v<0||v>31) return err_json("value out of range (0-31)");
+            ctx->ecmp_hash_mode=(uint32_t)v;
+            return ok_json();}
+        return err_json("unknown key");}
     if (!strcmp(cmd,"ping")) return strdup("{\"status\":\"ok\",\"msg\":\"pong\",\"module\":\"vrf\"}\n");
     return err_json("unknown command");}
 

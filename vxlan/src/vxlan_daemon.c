@@ -11,6 +11,30 @@
 #include "vxlan.h"
 #include "vxlan_ipc.h"
 
+static void write_schema(const char *path)
+{
+    FILE *f = fopen(path, "w"); if (!f) return;
+    fprintf(f,
+        "{\n"
+        "  \"module\": \"vxlan\",\n"
+        "  \"version\": \"1.0\",\n"
+        "  \"keys\": {\n"
+        "    \"UDP_PORT\": {\n"
+        "      \"type\": \"int\", \"description\": \"VXLAN UDP listen port (read-only, set via -p flag)\",\n"
+        "      \"default\": 4789, \"min\": 1, \"max\": 65535,\n"
+        "      \"mandatory\": false, \"group\": \"Network\"\n"
+        "    },\n"
+        "    \"LOCAL_IP\": {\n"
+        "      \"type\": \"str\", \"description\": \"Local VTEP IP address (read-only, set via -l flag)\",\n"
+        "      \"default\": \"\",\n"
+        "      \"mandatory\": false, \"group\": \"Network\"\n"
+        "    }\n"
+        "  }\n"
+        "}\n");
+    fclose(f);
+    printf("[vxlan] schema written to %s\n", path);
+}
+
 static void default_rx_cb(vxlan_pkt_t *pkt, void *user)
 {
     (void)user;
@@ -49,6 +73,8 @@ int main(int argc, char **argv)
             return 0;
         }
     }
+
+    write_schema("vxlan_schema.json");
 
     vxlan_ctx_t *ctx = vxlan_ctx_create();
     if (!ctx) { fprintf(stderr, "vxlan_ctx_create failed\n"); return 1; }

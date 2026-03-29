@@ -852,7 +852,7 @@ vrf_ctx_t *vrf_ctx_create(void) {
     vrf_ctx_t *ctx=calloc(1,sizeof(*ctx)); if (!ctx) return NULL;
     if (vrf_table_init(&ctx->vrf_table)!=VRF_OK||
         if_map_init(&ctx->if_map)!=VRF_OK) { vrf_ctx_destroy(ctx); return NULL; }
-    ctx->sock_fd=-1; return ctx;
+    ctx->sock_fd=-1; ctx->ecmp_hash_mode=VRF_ECMP_HASH_DEFAULT; return ctx;
 }
 
 void vrf_ctx_destroy(vrf_ctx_t *ctx) {

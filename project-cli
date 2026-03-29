@@ -825,6 +825,925 @@ Examples:
     def emptyline(self):
         pass   # don't repeat last command on empty enter
 
+# ══════════════════════════════════════════════════════════════
+#  Operational helpers shared by module shells
+# ══════════════════════════════════════════════════════════════
+
+def _resp_ok(resp: dict, noun: str = "") -> bool:
+    if resp.get("status") == "ok":
+        return True
+    msg = resp.get("message", resp.get("msg", "operation failed"))
+    _err(f"{noun + ': ' if noun else ''}{msg}")
+    return False
+
+
+def _tbl(headers: list, rows: list, col_widths: list = None):
+    """Print a fixed-width table."""
+    widths = col_widths or [
+        max(len(str(h)), max((len(str(r[i])) for r in rows), default=0)) + 2
+        for i, h in enumerate(headers)
+    ]
+    fmt = "  " + "".join(f"{{:<{w}}}" for w in widths)
+    print()
+    print(fmt.format(*headers))
+    print("  " + "".join("─" * w for w in widths))
+    for r in rows:
+        print(fmt.format(*[str(v) for v in r]))
+    print()
+
+
+# ══════════════════════════════════════════════════════════════
+#  IP module shell
+# ══════════════════════════════════════════════════════════════
+
+class IpConfigShell(ModuleConfigShell):
+    """ip module — config keys + address / route / interface management."""
+
+    def do_address(self, arg: str):
+        """
+address show [<ifindex>]             List addresses (optionally per interface).
+address add <ifindex> <prefix/len>   Assign an address to an interface.
+address del <ifindex> <prefix/len>   Remove an address from an interface.
+
+Examples:
+  address show
+  address show 2
+  address add 2 192.168.1.1/24
+  address del 2 192.168.1.1/24
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+
+        if sub == "show":
+            params: dict = {}
+            if len(parts) > 1:
+                try: params["ifindex"] = int(parts[1])
+                except ValueError: _err("ifindex must be an integer"); return
+            resp = self._mod.op("list_addrs", **params)
+            if not _resp_ok(resp): return
+            addrs = resp.get("addresses", [])
+            if not addrs: _info("No addresses configured."); return
+            _tbl(["IFINDEX", "INTERFACE", "PREFIX"],
+                 [[a.get("ifindex",""), a.get("ifname",""), a.get("prefix","")]
+                  for a in addrs], [10, 18, 24])
+
+        elif sub == "add":
+            if len(parts) < 3: _err("Usage: address add <ifindex> <prefix/len>"); return
+            try: ifindex = int(parts[1])
+            except ValueError: _err("ifindex must be an integer"); return
+            resp = self._mod.op("add_addr", ifindex=ifindex, prefix=parts[2])
+            if _resp_ok(resp): _ok(f"address {parts[2]} assigned to ifindex {ifindex}")
+
+        elif sub == "del":
+            if len(parts) < 3: _err("Usage: address del <ifindex> <prefix/len>"); return
+            try: ifindex = int(parts[1])
+            except ValueError: _err("ifindex must be an integer"); return
+            resp = self._mod.op("del_addr", ifindex=ifindex, prefix=parts[2])
+            if _resp_ok(resp): _ok(f"address {parts[2]} removed from ifindex {ifindex}")
+
+        else:
+            _err("Usage: address show|add|del  (type 'help address')")
+
+    def complete_address(self, text, line, bi, ei):
+        return [s for s in ["show", "add", "del"] if s.startswith(text)]
+
+    def do_interface(self, arg: str):
+        """
+interface show    List tracked interfaces with forwarding state and address count.
+        """
+        if arg.strip().lower() != "show":
+            _err("Usage: interface show"); return
+        resp = self._mod.op("list_interfaces")
+        if not _resp_ok(resp): return
+        ifaces = resp.get("interfaces", [])
+        if not ifaces: _info("No interfaces tracked."); return
+        _tbl(["IFINDEX", "NAME", "MTU", "IPv4 FWD", "IPv6 FWD", "ADDRS"],
+             [[i.get("ifindex",""), i.get("name",""), i.get("mtu",""),
+               "on" if i.get("ip4_fwd") else "off",
+               "on" if i.get("ip6_fwd") else "off",
+               i.get("n_addrs","")]
+              for i in ifaces], [10, 18, 8, 10, 10, 6])
+
+    def complete_interface(self, text, line, bi, ei):
+        return [s for s in ["show"] if s.startswith(text)]
+
+    def do_route(self, arg: str):
+        """
+route show [ipv4|ipv6]                                    List routes.
+route add <prefix> nexthop <ip> ifindex <n> [metric <m>]  Add a static route.
+route del <prefix>                                        Remove a route.
+
+Examples:
+  route show
+  route show ipv4
+  route add 10.0.0.0/24 nexthop 192.168.1.1 ifindex 2
+  route del 10.0.0.0/24
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+
+        if sub == "show":
+            params: dict = {}
+            if len(parts) > 1: params["af"] = parts[1].lower()
+            resp = self._mod.op("list_routes", **params)
+            if not _resp_ok(resp): return
+            routes = resp.get("routes", [])
+            if not routes: _info("No routes."); return
+            rows = []
+            for r in routes:
+                for p in r.get("paths", [{}]):
+                    rows.append([r.get("prefix",""), p.get("nexthop","—"),
+                                 p.get("ifindex",""), r.get("ad",""),
+                                 r.get("metric",""), p.get("weight",1)])
+            _tbl(["PREFIX", "NEXTHOP", "IFINDEX", "AD", "METRIC", "W"],
+                 rows, [24, 22, 10, 5, 8, 3])
+
+        elif sub == "add":
+            p = parts
+            try:
+                prefix  = p[1]
+                nh_i    = p.index("nexthop")
+                if_i    = p.index("ifindex")
+                nexthop = p[nh_i + 1]
+                ifindex = int(p[if_i + 1])
+            except (ValueError, IndexError):
+                _err("Usage: route add <prefix> nexthop <ip> ifindex <n> [metric <m>]")
+                return
+            params: dict = dict(prefix=prefix, nexthop=nexthop, ifindex=ifindex)
+            try: params["metric"] = int(p[p.index("metric") + 1])
+            except (ValueError, IndexError): pass
+            try: params["ad"] = int(p[p.index("ad") + 1])
+            except (ValueError, IndexError): pass
+            resp = self._mod.op("add_route", **params)
+            if _resp_ok(resp): _ok(f"route {prefix} via {nexthop} ifindex {ifindex}")
+
+        elif sub == "del":
+            if len(parts) < 2: _err("Usage: route del <prefix>"); return
+            resp = self._mod.op("del_route", prefix=parts[1])
+            if _resp_ok(resp): _ok(f"route {parts[1]} removed")
+
+        else:
+            _err("Usage: route show|add|del  (type 'help route')")
+
+    def complete_route(self, text, line, bi, ei):
+        return [s for s in ["show", "add", "del"] if s.startswith(text)]
+
+
+# ══════════════════════════════════════════════════════════════
+#  VRF module shell
+# ══════════════════════════════════════════════════════════════
+
+class VrfConfigShell(ModuleConfigShell):
+    """vrf module — config keys + VRF / route / leak management."""
+
+    def do_vrf(self, arg: str):
+        """
+vrf show [<id>]                  List VRFs or show a specific VRF.
+vrf create <id> <name>           Create a new VRF.
+vrf delete <id>                  Delete a VRF.
+vrf bind <vrf_id> <ifindex>      Bind an interface to a VRF.
+vrf unbind <ifindex>             Remove an interface from its VRF.
+
+Examples:
+  vrf show
+  vrf create 10 red
+  vrf delete 10
+  vrf bind 10 2
+  vrf unbind 2
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+
+        if sub == "show":
+            if len(parts) > 1:
+                try: vid = int(parts[1])
+                except ValueError: _err("id must be an integer"); return
+                resp = self._mod.op("get_vrf", id=vid)
+                if not _resp_ok(resp): return
+                _header(f"VRF {resp.get('name','')} (id {resp.get('id','')})")
+                for k in ["id","name","flags","table_id","rd","n_ifaces",
+                          "routes_v4","routes_v6","ecmp_hash_mode"]:
+                    _info(f"{k:<20}: {resp.get(k,'')}")
+                print()
+            else:
+                resp = self._mod.op("list_vrfs")
+                if not _resp_ok(resp): return
+                vrfs = resp.get("vrfs", [])
+                if not vrfs: _info("No VRFs."); return
+                _tbl(["ID", "NAME", "TABLE", "IFACES", "ROUTES_V4", "ROUTES_V6"],
+                     [[v.get("id",""), v.get("name",""), v.get("table_id",""),
+                       v.get("n_ifaces",""), v.get("routes_v4",""), v.get("routes_v6","")]
+                      for v in vrfs], [6, 18, 8, 8, 10, 10])
+
+        elif sub == "create":
+            if len(parts) < 3: _err("Usage: vrf create <id> <name>"); return
+            try: vid = int(parts[1])
+            except ValueError: _err("id must be an integer"); return
+            resp = self._mod.op("create_vrf", id=vid, name=parts[2])
+            if _resp_ok(resp): _ok(f"VRF {vid} '{parts[2]}' created")
+
+        elif sub == "delete":
+            if len(parts) < 2: _err("Usage: vrf delete <id>"); return
+            try: vid = int(parts[1])
+            except ValueError: _err("id must be an integer"); return
+            resp = self._mod.op("delete_vrf", id=vid)
+            if _resp_ok(resp): _ok(f"VRF {vid} deleted")
+
+        elif sub == "bind":
+            if len(parts) < 3: _err("Usage: vrf bind <vrf_id> <ifindex>"); return
+            try: vid, ifidx = int(parts[1]), int(parts[2])
+            except ValueError: _err("vrf_id and ifindex must be integers"); return
+            resp = self._mod.op("bind_interface", vrf_id=vid, ifindex=ifidx)
+            if _resp_ok(resp): _ok(f"ifindex {ifidx} bound to VRF {vid}")
+
+        elif sub == "unbind":
+            if len(parts) < 2: _err("Usage: vrf unbind <ifindex>"); return
+            try: ifidx = int(parts[1])
+            except ValueError: _err("ifindex must be an integer"); return
+            resp = self._mod.op("unbind_interface", ifindex=ifidx)
+            if _resp_ok(resp): _ok(f"ifindex {ifidx} unbound")
+
+        else:
+            _err("Usage: vrf show|create|delete|bind|unbind  (type 'help vrf')")
+
+    def complete_vrf(self, text, line, bi, ei):
+        return [s for s in ["show", "create", "delete", "bind", "unbind"]
+                if s.startswith(text)]
+
+    def do_route(self, arg: str):
+        """
+route show [<vrf_id>] [ipv4|ipv6]                                   List routes.
+route add <vrf_id> <prefix> nexthop <ip> ifindex <n> [metric <m>]  Add a route.
+route del <vrf_id> <prefix>                                         Remove a route.
+
+Examples:
+  route show
+  route show 10
+  route add 10 10.0.0.0/24 nexthop 192.168.1.1 ifindex 2
+  route del 10 10.0.0.0/24
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+
+        if sub == "show":
+            params: dict = {}
+            for tok in parts[1:]:
+                if tok.lower() in ("ipv4","ipv6"): params["af"] = tok.lower()
+                else:
+                    try: params["vrf_id"] = int(tok)
+                    except ValueError: pass
+            resp = self._mod.op("list_routes", **params)
+            if not _resp_ok(resp): return
+            routes = resp.get("routes", [])
+            if not routes: _info("No routes."); return
+            rows = []
+            for r in routes:
+                for p in r.get("paths", [{}]):
+                    rows.append([r.get("vrf_id",""), r.get("prefix",""),
+                                 p.get("nexthop","—"), p.get("ifindex",""),
+                                 r.get("metric",""), p.get("weight",1)])
+            _tbl(["VRF", "PREFIX", "NEXTHOP", "IFINDEX", "METRIC", "W"],
+                 rows, [6, 24, 22, 10, 8, 3])
+
+        elif sub == "add":
+            p = parts
+            try:
+                vrf_id  = int(p[1])
+                prefix  = p[2]
+                nh_i    = p.index("nexthop")
+                if_i    = p.index("ifindex")
+                nexthop = p[nh_i + 1]
+                ifindex = int(p[if_i + 1])
+            except (ValueError, IndexError):
+                _err("Usage: route add <vrf_id> <prefix> nexthop <ip> ifindex <n>")
+                return
+            params: dict = dict(vrf_id=vrf_id, prefix=prefix,
+                                nexthop=nexthop, ifindex=ifindex)
+            try: params["metric"] = int(p[p.index("metric") + 1])
+            except (ValueError, IndexError): pass
+            resp = self._mod.op("add_route", **params)
+            if _resp_ok(resp): _ok(f"route VRF {vrf_id} {prefix} via {nexthop}")
+
+        elif sub == "del":
+            if len(parts) < 3: _err("Usage: route del <vrf_id> <prefix>"); return
+            try: vrf_id = int(parts[1])
+            except ValueError: _err("vrf_id must be an integer"); return
+            resp = self._mod.op("del_route", vrf_id=vrf_id, prefix=parts[2])
+            if _resp_ok(resp): _ok(f"route {parts[2]} in VRF {vrf_id} removed")
+
+        else:
+            _err("Usage: route show|add|del  (type 'help route')")
+
+    def complete_route(self, text, line, bi, ei):
+        return [s for s in ["show", "add", "del"] if s.startswith(text)]
+
+    def do_leak(self, arg: str):
+        """
+leak show [<vrf_id>]                                             List leaked routes.
+leak add <src> <dst> <prefix> nexthop <ip> ifindex <n>          Leak a route.
+leak del <src> <dst> <prefix>                                   Remove a leaked route.
+
+Examples:
+  leak show
+  leak add 10 20 10.0.0.0/24 nexthop 192.168.1.1 ifindex 2
+  leak del 10 20 10.0.0.0/24
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+
+        if sub == "show":
+            params: dict = {}
+            if len(parts) > 1:
+                try: params["vrf_id"] = int(parts[1])
+                except ValueError: pass
+            resp = self._mod.op("list_leaks", **params)
+            if not _resp_ok(resp): return
+            leaks = resp.get("leaks", [])
+            if not leaks: _info("No leaked routes."); return
+            _tbl(["SRC_VRF", "DST_VRF", "PREFIX", "NEXTHOP", "METRIC"],
+                 [[l.get("src_vrf",""), l.get("dst_vrf",""), l.get("prefix",""),
+                   l.get("nexthop","—"), l.get("metric","")]
+                  for l in leaks], [8, 8, 24, 22, 8])
+
+        elif sub == "add":
+            p = parts
+            try:
+                src = int(p[1]); dst = int(p[2]); prefix = p[3]
+                nh_i    = p.index("nexthop")
+                if_i    = p.index("ifindex")
+                nexthop = p[nh_i + 1]
+                ifindex = int(p[if_i + 1])
+            except (ValueError, IndexError):
+                _err("Usage: leak add <src> <dst> <prefix> nexthop <ip> ifindex <n>")
+                return
+            params: dict = dict(src_vrf_id=src, dst_vrf_id=dst,
+                                prefix=prefix, nexthop=nexthop, ifindex=ifindex)
+            try: params["metric"] = int(p[p.index("metric") + 1])
+            except (ValueError, IndexError): pass
+            resp = self._mod.op("leak_route", **params)
+            if _resp_ok(resp): _ok(f"route {prefix} leaked VRF {src} → {dst}")
+
+        elif sub == "del":
+            if len(parts) < 4: _err("Usage: leak del <src> <dst> <prefix>"); return
+            try: src, dst = int(parts[1]), int(parts[2])
+            except ValueError: _err("vrf_ids must be integers"); return
+            resp = self._mod.op("unleak_route",
+                                src_vrf_id=src, dst_vrf_id=dst, prefix=parts[3])
+            if _resp_ok(resp): _ok(f"leaked route {parts[3]} removed")
+
+        else:
+            _err("Usage: leak show|add|del  (type 'help leak')")
+
+    def complete_leak(self, text, line, bi, ei):
+        return [s for s in ["show", "add", "del"] if s.startswith(text)]
+
+
+# ══════════════════════════════════════════════════════════════
+#  EVPN module shell
+# ══════════════════════════════════════════════════════════════
+
+class EvpnConfigShell(ModuleConfigShell):
+    """evpn module — read-only config + EVI / VTEP / MAC management."""
+
+    def do_evi(self, arg: str):
+        """
+evi show [<evi_id>]              List EVIs or show a specific EVI.
+evi create <evi_id> <l2_vni>    Create an EVI.
+evi delete <evi_id>              Delete an EVI.
+
+Examples:
+  evi show
+  evi create 1 1000
+  evi delete 1
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+
+        if sub == "show":
+            if len(parts) > 1:
+                try: eid = int(parts[1])
+                except ValueError: _err("evi_id must be an integer"); return
+                resp = self._mod.op("get_evi", evi_id=eid)
+                if not _resp_ok(resp): return
+                _header(f"EVI {resp.get('evi_id','')}")
+                for k in ["evi_id","l2_vni","l3_vni","vrf_id","rd",
+                          "local_vtep","n_macs","n_prefixes","n_imet"]:
+                    _info(f"{k:<16}: {resp.get(k,'')}")
+                print()
+            else:
+                resp = self._mod.op("list_evis")
+                if not _resp_ok(resp): return
+                evis = resp.get("evis", [])
+                if not evis: _info("No EVIs."); return
+                _tbl(["EVI_ID", "L2_VNI", "L3_VNI", "LOCAL_VTEP", "MACs", "PFXs"],
+                     [[e.get("evi_id",""), e.get("l2_vni",""), e.get("l3_vni",""),
+                       e.get("local_vtep",""), e.get("n_macs",""), e.get("n_prefixes","")]
+                      for e in evis], [8, 8, 8, 18, 6, 6])
+
+        elif sub == "create":
+            if len(parts) < 3: _err("Usage: evi create <evi_id> <l2_vni>"); return
+            try: eid, vni = int(parts[1]), int(parts[2])
+            except ValueError: _err("evi_id and l2_vni must be integers"); return
+            resp = self._mod.op("create_evi", evi_id=eid, l2_vni=vni)
+            if _resp_ok(resp): _ok(f"EVI {eid} (l2_vni={vni}) created")
+
+        elif sub == "delete":
+            if len(parts) < 2: _err("Usage: evi delete <evi_id>"); return
+            try: eid = int(parts[1])
+            except ValueError: _err("evi_id must be an integer"); return
+            resp = self._mod.op("delete_evi", evi_id=eid)
+            if _resp_ok(resp): _ok(f"EVI {eid} deleted")
+
+        else:
+            _err("Usage: evi show|create|delete  (type 'help evi')")
+
+    def complete_evi(self, text, line, bi, ei):
+        return [s for s in ["show", "create", "delete"] if s.startswith(text)]
+
+    def do_vtep(self, arg: str):
+        """
+vtep show <evi_id>        List VTEPs for an EVI.
+vtep add <evi_id> <ip>    Add a remote VTEP to an EVI.
+vtep del <evi_id> <ip>    Remove a remote VTEP from an EVI.
+
+Examples:
+  vtep show 1
+  vtep add 1 10.0.0.2
+  vtep del 1 10.0.0.2
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+
+        if sub == "show":
+            if len(parts) < 2: _err("Usage: vtep show <evi_id>"); return
+            try: eid = int(parts[1])
+            except ValueError: _err("evi_id must be an integer"); return
+            resp = self._mod.op("list_vteps", evi_id=eid)
+            if not _resp_ok(resp): return
+            vteps = resp.get("vteps", [])
+            if not vteps: _info("No VTEPs."); return
+            _tbl(["VTEP", "VNI", "RD"],
+                 [[v.get("vtep",""), v.get("vni",""), v.get("rd","")]
+                  for v in vteps], [20, 8, 20])
+
+        elif sub == "add":
+            if len(parts) < 3: _err("Usage: vtep add <evi_id> <ip>"); return
+            try: eid = int(parts[1])
+            except ValueError: _err("evi_id must be an integer"); return
+            resp = self._mod.op("add_vtep", evi_id=eid, vtep=parts[2])
+            if _resp_ok(resp): _ok(f"VTEP {parts[2]} added to EVI {eid}")
+
+        elif sub == "del":
+            if len(parts) < 3: _err("Usage: vtep del <evi_id> <ip>"); return
+            try: eid = int(parts[1])
+            except ValueError: _err("evi_id must be an integer"); return
+            resp = self._mod.op("del_vtep", evi_id=eid, vtep=parts[2])
+            if _resp_ok(resp): _ok(f"VTEP {parts[2]} removed from EVI {eid}")
+
+        else:
+            _err("Usage: vtep show|add|del  (type 'help vtep')")
+
+    def complete_vtep(self, text, line, bi, ei):
+        return [s for s in ["show", "add", "del"] if s.startswith(text)]
+
+    def do_mac(self, arg: str):
+        """
+mac show <evi_id>    List MAC entries for an EVI.
+
+Example:
+  mac show 1
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+        if sub == "show":
+            if len(parts) < 2: _err("Usage: mac show <evi_id>"); return
+            try: eid = int(parts[1])
+            except ValueError: _err("evi_id must be an integer"); return
+            resp = self._mod.op("list_macs", evi_id=eid)
+            if not _resp_ok(resp): return
+            macs = resp.get("macs", [])
+            if not macs: _info("No MAC entries."); return
+            _tbl(["MAC", "IP", "VTEP", "IFINDEX", "HITS"],
+                 [[m.get("mac",""), m.get("ip",""), m.get("vtep",""),
+                   m.get("ifindex",""), m.get("hits","")]
+                  for m in macs], [20, 18, 18, 8, 8])
+        else:
+            _err("Usage: mac show <evi_id>")
+
+    def complete_mac(self, text, line, bi, ei):
+        return [s for s in ["show"] if s.startswith(text)]
+
+
+# ══════════════════════════════════════════════════════════════
+#  VXLAN module shell
+# ══════════════════════════════════════════════════════════════
+
+class VxlanConfigShell(ModuleConfigShell):
+    """vxlan module — read-only config + VNI / FDB / flood / tunnel management."""
+
+    def do_vni(self, arg: str):
+        """
+vni show [<vni>]    List VNIs or show a specific VNI.
+vni add <vni>       Add a VNI.
+vni del <vni>       Remove a VNI.
+
+Examples:
+  vni show
+  vni add 1000
+  vni del 1000
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+
+        if sub == "show":
+            if len(parts) > 1:
+                try: vni = int(parts[1])
+                except ValueError: _err("vni must be an integer"); return
+                resp = self._mod.op("get_vni", vni=vni)
+                if not _resp_ok(resp): return
+                _header(f"VNI {resp.get('vni','')}")
+                for k in ["vni","bd_ifindex","flags","mtu","n_fdb","n_flood","mcast_group"]:
+                    _info(f"{k:<14}: {resp.get(k,'')}")
+                print()
+            else:
+                resp = self._mod.op("list_vnis")
+                if not _resp_ok(resp): return
+                vnis = resp.get("vnis", [])
+                if not vnis: _info("No VNIs."); return
+                _tbl(["VNI", "BD_IFINDEX", "MTU", "FDB", "FLOOD", "MCAST_GROUP"],
+                     [[v.get("vni",""), v.get("bd_ifindex",""), v.get("mtu",""),
+                       v.get("n_fdb",""), v.get("n_flood",""), v.get("mcast_group","")]
+                      for v in vnis], [8, 12, 6, 6, 7, 18])
+
+        elif sub == "add":
+            if len(parts) < 2: _err("Usage: vni add <vni>"); return
+            try: vni = int(parts[1])
+            except ValueError: _err("vni must be an integer"); return
+            params: dict = {"vni": vni}
+            if len(parts) > 2:
+                try: params["bd_ifindex"] = int(parts[2])
+                except ValueError: pass
+            resp = self._mod.op("add_vni", **params)
+            if _resp_ok(resp): _ok(f"VNI {vni} added")
+
+        elif sub == "del":
+            if len(parts) < 2: _err("Usage: vni del <vni>"); return
+            try: vni = int(parts[1])
+            except ValueError: _err("vni must be an integer"); return
+            resp = self._mod.op("del_vni", vni=vni)
+            if _resp_ok(resp): _ok(f"VNI {vni} removed")
+
+        else:
+            _err("Usage: vni show|add|del  (type 'help vni')")
+
+    def complete_vni(self, text, line, bi, ei):
+        return [s for s in ["show", "add", "del"] if s.startswith(text)]
+
+    def do_fdb(self, arg: str):
+        """
+fdb show [<vni>]                    List FDB entries (optionally per VNI).
+fdb add <vni> <mac> <remote_ip>     Add a static FDB entry.
+fdb del <vni> <mac>                 Remove a FDB entry.
+
+Examples:
+  fdb show
+  fdb show 1000
+  fdb add 1000 aa:bb:cc:dd:ee:ff 10.0.0.2
+  fdb del 1000 aa:bb:cc:dd:ee:ff
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+
+        if sub == "show":
+            params: dict = {}
+            if len(parts) > 1:
+                try: params["vni"] = int(parts[1])
+                except ValueError: pass
+            resp = self._mod.op("list_fdb", **params)
+            if not _resp_ok(resp): return
+            entries = resp.get("fdb", [])
+            if not entries: _info("No FDB entries."); return
+            _tbl(["MAC", "REMOTE_IP", "IFINDEX", "HITS"],
+                 [[e.get("mac",""), e.get("remote_ip",""),
+                   e.get("ifindex",""), e.get("hits","")]
+                  for e in entries], [20, 18, 10, 8])
+
+        elif sub == "add":
+            if len(parts) < 4: _err("Usage: fdb add <vni> <mac> <remote_ip>"); return
+            try: vni = int(parts[1])
+            except ValueError: _err("vni must be an integer"); return
+            resp = self._mod.op("add_fdb", vni=vni, mac=parts[2], remote_ip=parts[3])
+            if _resp_ok(resp): _ok(f"FDB {parts[2]} → {parts[3]} in VNI {vni} added")
+
+        elif sub == "del":
+            if len(parts) < 3: _err("Usage: fdb del <vni> <mac>"); return
+            try: vni = int(parts[1])
+            except ValueError: _err("vni must be an integer"); return
+            resp = self._mod.op("del_fdb", vni=vni, mac=parts[2])
+            if _resp_ok(resp): _ok(f"FDB {parts[2]} in VNI {vni} removed")
+
+        else:
+            _err("Usage: fdb show|add|del  (type 'help fdb')")
+
+    def complete_fdb(self, text, line, bi, ei):
+        return [s for s in ["show", "add", "del"] if s.startswith(text)]
+
+    def do_flood(self, arg: str):
+        """
+flood show [<vni>]           List flood entries.
+flood add <vni> <remote_ip>  Add a flood entry.
+flood del <vni> <remote_ip>  Remove a flood entry.
+
+Examples:
+  flood show 1000
+  flood add 1000 10.0.0.2
+  flood del 1000 10.0.0.2
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+
+        if sub == "show":
+            params: dict = {}
+            if len(parts) > 1:
+                try: params["vni"] = int(parts[1])
+                except ValueError: pass
+            resp = self._mod.op("list_flood", **params)
+            if not _resp_ok(resp): return
+            flood = resp.get("flood_list", [])
+            if not flood: _info("No flood entries."); return
+            _tbl(["VNI", "REMOTE_IP"],
+                 [[f.get("vni",""), f.get("remote_ip", f.get("remote",""))]
+                  for f in flood], [8, 20])
+
+        elif sub == "add":
+            if len(parts) < 3: _err("Usage: flood add <vni> <remote_ip>"); return
+            try: vni = int(parts[1])
+            except ValueError: _err("vni must be an integer"); return
+            resp = self._mod.op("add_flood", vni=vni, remote=parts[2])
+            if _resp_ok(resp): _ok(f"flood entry {parts[2]} in VNI {vni} added")
+
+        elif sub == "del":
+            if len(parts) < 3: _err("Usage: flood del <vni> <remote_ip>"); return
+            try: vni = int(parts[1])
+            except ValueError: _err("vni must be an integer"); return
+            resp = self._mod.op("del_flood", vni=vni, remote=parts[2])
+            if _resp_ok(resp): _ok(f"flood entry {parts[2]} in VNI {vni} removed")
+
+        else:
+            _err("Usage: flood show|add|del  (type 'help flood')")
+
+    def complete_flood(self, text, line, bi, ei):
+        return [s for s in ["show", "add", "del"] if s.startswith(text)]
+
+    def do_tunnel(self, arg: str):
+        """
+tunnel show              List all VXLAN tunnels.
+tunnel add <remote_ip>   Add a tunnel endpoint.
+tunnel del <remote_ip>   Remove a tunnel endpoint.
+
+Examples:
+  tunnel show
+  tunnel add 10.0.0.2
+  tunnel del 10.0.0.2
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+
+        if sub == "show":
+            resp = self._mod.op("list_tunnels")
+            if not _resp_ok(resp): return
+            tunnels = resp.get("tunnels", [])
+            if not tunnels: _info("No tunnels."); return
+            _tbl(["REMOTE_IP", "VNI", "DST_PORT", "TTL", "TX_PKTS", "RX_PKTS"],
+                 [[t.get("remote_ip",""), t.get("vni",""), t.get("dst_port",""),
+                   t.get("ttl",""), t.get("tx_pkts",""), t.get("rx_pkts","")]
+                  for t in tunnels], [18, 8, 10, 5, 10, 10])
+
+        elif sub == "add":
+            if len(parts) < 2: _err("Usage: tunnel add <remote_ip>"); return
+            resp = self._mod.op("add_tunnel", remote_ip=parts[1])
+            if _resp_ok(resp): _ok(f"tunnel to {parts[1]} added")
+
+        elif sub == "del":
+            if len(parts) < 2: _err("Usage: tunnel del <remote_ip>"); return
+            resp = self._mod.op("del_tunnel", remote_ip=parts[1])
+            if _resp_ok(resp): _ok(f"tunnel to {parts[1]} removed")
+
+        else:
+            _err("Usage: tunnel show|add|del  (type 'help tunnel')")
+
+    def complete_tunnel(self, text, line, bi, ei):
+        return [s for s in ["show", "add", "del"] if s.startswith(text)]
+
+
+# ══════════════════════════════════════════════════════════════
+#  BFD module shell
+# ══════════════════════════════════════════════════════════════
+
+class _BfdAdapter:
+    """Adapter for the BFD daemon (Python), bridging BFDClient to ModuleConfigShell."""
+
+    VERSION = "unknown"
+
+    _TYPE_META = {
+        "DESIRED_MIN_TX_US":  {"type":"int","min":10000,"max":60000000,
+                               "group":"Timers","description":"Desired min TX interval (µs)"},
+        "REQUIRED_MIN_RX_US": {"type":"int","min":10000,"max":60000000,
+                               "group":"Timers","description":"Required min RX interval (µs)"},
+        "DETECT_MULT":        {"type":"int","min":1,"max":255,
+                               "group":"Timers","description":"Detection time multiplier"},
+        "MAX_SESSIONS":       {"type":"int","min":1,"max":1024,
+                               "group":"Session","description":"Maximum concurrent BFD sessions"},
+        "DEFAULT_AUTH_TYPE":  {"type":"str","group":"Session",
+                               "description":"Authentication type (none/md5/sha1)"},
+        "ECHO_ENABLED":       {"type":"bool","group":"Session",
+                               "description":"Enable BFD echo mode"},
+        "LOG_LEVEL":          {"type":"str","group":"Logging",
+                               "description":"Log level (DEBUG/INFO/WARNING/ERROR)"},
+        "LOG_STATE_CHANGES":  {"type":"bool","group":"Logging",
+                               "description":"Log BFD state transitions"},
+    }
+
+    def __init__(self):
+        try:
+            import importlib
+            v = importlib.import_module("bfd.__version__")
+            self.VERSION = getattr(v, "VERSION", "unknown")
+        except ImportError:
+            pass
+        self._client = None
+        try:
+            from bfd.client import BFDClient
+            self._client = BFDClient()
+        except ImportError:
+            pass
+
+    @property
+    def version(self): return self.VERSION
+
+    @property
+    def active(self) -> bool:
+        if not self._client: return False
+        try:
+            return bool(self._client.ping().get("ok"))
+        except Exception:
+            return False
+
+    def schema_rows(self) -> list:
+        try:
+            from bfd.config import DEFAULTS
+            from bfd._config_groups import DISPLAY_GROUPS
+        except ImportError:
+            return []
+        rows = []
+        for group, keys in DISPLAY_GROUPS.items():
+            for key in keys:
+                meta    = self._TYPE_META.get(key, {"type":"str","group":group,"description":""})
+                default = DEFAULTS.get(key)
+                val     = default
+                try:
+                    if self._client:
+                        resp = self._client.config_get(key)
+                        if resp.get("ok") and "value" in resp:
+                            val = resp["value"]
+                except Exception:
+                    pass
+                rows.append({
+                    "group":       meta.get("group", group),
+                    "key":         key,
+                    "value":       val,
+                    "type":        meta.get("type", "str"),
+                    "description": meta.get("description", ""),
+                    "min":         meta.get("min"),
+                    "max":         meta.get("max"),
+                    "mandatory":   False,
+                    "default":     default,
+                })
+        return rows
+
+    def get(self, key: str):
+        if not self._client: raise RuntimeError("BFD daemon not running")
+        resp = self._client.config_get(key)
+        if resp.get("ok"): return resp.get("value")
+        raise KeyError(f"{key}: {resp.get('error', str(resp))}")
+
+    def set(self, key: str, value: str):
+        if not self._client: raise RuntimeError("BFD daemon not running")
+        try:
+            from bfd.config import validate, DEFAULTS
+            default = DEFAULTS.get(key.upper())
+            if isinstance(default, bool):
+                coerced = value.lower() in ("true", "1", "yes", "on")
+            elif isinstance(default, int):
+                coerced = int(value)
+            else:
+                coerced = value
+            ok, err = validate(key, coerced)
+            if not ok: raise ValueError(err)
+        except ImportError:
+            coerced = value
+        resp = self._client.config_set(key, coerced)
+        if not resp.get("ok"):
+            raise ValueError(resp.get("error", "failed"))
+
+    def reset(self, key: str):
+        if not self._client: raise RuntimeError("BFD daemon not running")
+        resp = self._client.config_reset(key)
+        if not resp.get("ok"):
+            raise ValueError(resp.get("error", "failed"))
+
+    def session_show(self, peer_ip=None):
+        if not self._client: raise RuntimeError("BFD daemon not running")
+        return self._client.session_show(peer_ip)
+
+    def session_add(self, peer_ip: str, **kwargs):
+        if not self._client: raise RuntimeError("BFD daemon not running")
+        return self._client.session_add(peer_ip, **kwargs)
+
+    def session_del(self, peer_ip: str):
+        if not self._client: raise RuntimeError("BFD daemon not running")
+        return self._client.session_del(peer_ip)
+
+
+class BfdConfigShell(ModuleConfigShell):
+    """BFD module shell — config keys + session management."""
+
+    def __init__(self):
+        super().__init__("bfd", _BfdAdapter())
+
+    def do_session(self, arg: str):
+        """
+session show [<peer_ip>]                                              Show sessions.
+session add <peer_ip> [local <ip>] [tx <us>] [rx <us>] [mult <n>]  Add a session.
+session del <peer_ip>                                                 Delete a session.
+
+Examples:
+  session show
+  session show 10.0.0.2
+  session add 10.0.0.2
+  session add 10.0.0.2 local 10.0.0.1 tx 300000 rx 300000 mult 3
+  session del 10.0.0.2
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+
+        if sub == "show":
+            peer = parts[1] if len(parts) > 1 else None
+            try:
+                resp = self._mod.session_show(peer)
+            except Exception as e: _err(str(e)); return
+            if not resp.get("ok"): _err(resp.get("error","failed")); return
+            sessions = resp.get("sessions", [])
+            if isinstance(sessions, dict): sessions = list(sessions.values())
+            if not sessions: _info("No BFD sessions."); return
+            _tbl(["PEER_IP", "LOCAL_IP", "STATE", "TX_US", "RX_US", "MULT"],
+                 [[s.get("peer_ip",""), s.get("local_ip",""), s.get("state",""),
+                   s.get("desired_min_tx_us",""), s.get("required_min_rx_us",""),
+                   s.get("detect_mult","")]
+                  for s in sessions], [18, 18, 10, 10, 10, 5])
+
+        elif sub == "add":
+            if len(parts) < 2:
+                _err("Usage: session add <peer_ip> [local <ip>] [tx <us>] [rx <us>] [mult <n>]")
+                return
+            peer_ip = parts[1]
+            kwargs: dict = {}
+            try:
+                if "local" in parts: kwargs["local_ip"]            = parts[parts.index("local") + 1]
+                if "tx"    in parts: kwargs["desired_min_tx_us"]   = int(parts[parts.index("tx")   + 1])
+                if "rx"    in parts: kwargs["required_min_rx_us"]  = int(parts[parts.index("rx")   + 1])
+                if "mult"  in parts: kwargs["detect_mult"]         = int(parts[parts.index("mult") + 1])
+            except (ValueError, IndexError):
+                _err("Invalid arguments"); return
+            try:
+                resp = self._mod.session_add(peer_ip, **kwargs)
+            except Exception as e: _err(str(e)); return
+            if resp.get("ok"): _ok(f"session to {peer_ip} created")
+            else: _err(resp.get("error", "failed"))
+
+        elif sub == "del":
+            if len(parts) < 2: _err("Usage: session del <peer_ip>"); return
+            try:
+                resp = self._mod.session_del(parts[1])
+            except Exception as e: _err(str(e)); return
+            if resp.get("ok"): _ok(f"session to {parts[1]} deleted")
+            else: _err(resp.get("error", "failed"))
+
+        else:
+            _err("Usage: session show|add|del  (type 'help session')")
+
+    def complete_session(self, text, line, bi, ei):
+        return [s for s in ["show", "add", "del"] if s.startswith(text)]
+
+
+# ── Module shell registry ─────────────────────────────────────
+_MODULE_SHELLS = {
+    "ip":    IpConfigShell,
+    "vrf":   VrfConfigShell,
+    "evpn":  EvpnConfigShell,
+    "vxlan": VxlanConfigShell,
+}
+
 # Keep LldpConfigShell as an alias that uses the new generic shell
 # (backward compat — ConfigShell still calls it)
 class LldpConfigShell(ModuleConfigShell):
@@ -837,6 +1756,85 @@ class LldpConfigShell(ModuleConfigShell):
         except Exception:
             mod = _LegacyLldpAdapter(adapter)
         super().__init__("lldp", mod)
+
+    def do_interface(self, arg: str):
+        """
+interface show              List interfaces with LLDP active.
+interface add <name>        Activate LLDP on an interface.
+interface remove <name>     Deactivate LLDP on an interface.
+
+Examples:
+  interface show
+  interface add eth0
+  interface remove eth0
+        """
+        parts = arg.split()
+        sub   = parts[0].lower() if parts else ""
+
+        if sub == "show":
+            try:
+                ifaces = self._mod.interfaces_list()
+            except Exception as e:
+                _err(str(e)); return
+            if not ifaces:
+                _info("No interfaces configured for LLDP.")
+                return
+            print()
+            for name in ifaces:
+                _info(f"  {_c(name, 'bold')}")
+            print()
+
+        elif sub == "add":
+            if len(parts) < 2: _err("Usage: interface add <name>"); return
+            try:
+                self._mod.interfaces_add(parts[1])
+                _ok(f"LLDP activated on {parts[1]}")
+            except Exception as e:
+                _err(str(e))
+
+        elif sub == "remove":
+            if len(parts) < 2: _err("Usage: interface remove <name>"); return
+            try:
+                self._mod.interfaces_remove(parts[1])
+                _ok(f"LLDP deactivated on {parts[1]}")
+            except Exception as e:
+                _err(str(e))
+
+        else:
+            _err("Usage: interface show|add|remove  (type 'help interface')")
+
+    def complete_interface(self, text, line, bi, ei):
+        return [s for s in ["show", "add", "remove"] if s.startswith(text)]
+
+    def do_neighbor(self, arg: str):
+        """
+neighbor show    Show all discovered LLDP neighbors.
+
+Example:
+  neighbor show
+        """
+        if arg.strip().lower() != "show":
+            _err("Usage: neighbor show"); return
+        try:
+            nb = self._mod.neighbors_list()
+        except Exception as e:
+            _err(str(e)); return
+        if nb is None:
+            _warn("Neighbor table unavailable (daemon not running).")
+            return
+        if not nb:
+            _info("No neighbors discovered.")
+            return
+        print()
+        for mac, info in (nb.items() if isinstance(nb, dict) else
+                          ((n.get("mac","?"), n) for n in nb)):
+            iface = info.get("port_id", info.get("interface","?"))
+            sys_n = info.get("system_name", "?")
+            _info(f"  {_c(mac,'bold'):<22} iface={iface}  system={sys_n}")
+        print()
+
+    def complete_neighbor(self, text, line, bi, ei):
+        return [s for s in ["show"] if s.startswith(text)]
 
 
 class _LegacyLldpAdapter:
@@ -879,6 +1877,11 @@ class _LegacyLldpAdapter:
             r.setdefault("mandatory", r["key"] in MANDATORY_KEYS)
             r.setdefault("default", None)
         return rows
+
+    def interfaces_list(self):  return self._a.interfaces_list()
+    def interfaces_add(self, name):    self._a.interfaces_add(name)
+    def interfaces_remove(self, name): self._a.interfaces_remove(name)
+    def neighbors_list(self):   return self._a.neighbors_list()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -943,10 +1946,18 @@ class ConfigShell(cmd.Cmd):
         print(_c(f"  Entering {name} configuration area.", "cyan"))
         print(_c("  Type 'info' for all keys, 'help' for commands, 'back' to return.", "grey"))
         print()
+        # Native Python modules (no C daemon, no ModuleAdapter)
+        if name == "lldp":
+            LldpConfigShell(self._adapter).cmdloop()
+            return
+        if name == "bfd":
+            BfdConfigShell().cmdloop()
+            return
         try:
             from modules import get_adapter
             mod = get_adapter(name)
-            ModuleConfigShell(name, mod).cmdloop()
+            shell_cls = _MODULE_SHELLS.get(name, ModuleConfigShell)
+            shell_cls(name, mod).cmdloop()
         except Exception as e:
             _err(f"Could not load module '{name}': {e}")
 

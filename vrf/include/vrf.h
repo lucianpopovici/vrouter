@@ -193,6 +193,7 @@ typedef struct vrf_ctx {
     int          sock_fd;
     bool         running;
     pthread_t    ipc_thread;
+    uint32_t     ecmp_hash_mode;
 } vrf_ctx_t;
 
 /* -----------------------------------------------------------------------

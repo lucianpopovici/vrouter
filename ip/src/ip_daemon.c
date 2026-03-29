@@ -36,39 +36,29 @@ static void write_schema(const char *path)
         "{\n"
         "  \"module\": \"ip\",\n"
         "  \"version\": \"1.0\",\n"
-        "  \"commands\": [\n"
-        "    {\"cmd\": \"%s\", \"args\": {\"ifindex\": \"int\", \"prefix\": \"str\", \"valid_lft\": \"int\", \"pref_lft\": \"int\"}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {\"ifindex\": \"int\", \"prefix\": \"str\"}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {\"ifindex\": \"int (optional, -1=all)\"}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {\"prefix\": \"str\", \"nexthop\": \"str\", \"ifindex\": \"int\", \"ad\": \"int\", \"metric\": \"int\"}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {\"prefix\": \"str\"}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {\"af\": \"ipv4|ipv6 (optional)\"}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {\"dst\": \"str\"}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {\"af\": \"ipv4|ipv6\", \"enable\": \"bool\"}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {\"ifindex\": \"int\", \"af\": \"ipv4|ipv6\", \"enable\": \"bool\"}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {\"af\": \"ipv4|ipv6\"}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {\"af\": \"ipv4|ipv6\"}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {\"path\": \"str (optional)\"}},\n"
-        "    {\"cmd\": \"%s\", \"args\": {\"path\": \"str (optional)\"}}\n"
-        "  ]\n"
-        "}\n",
-        IP_CMD_ADD_ADDR,
-        IP_CMD_DEL_ADDR,
-        IP_CMD_LIST_ADDRS,
-        IP_CMD_LIST_IFS,
-        IP_CMD_ADD_ROUTE,
-        IP_CMD_DEL_ROUTE,
-        IP_CMD_LIST_ROUTES,
-        IP_CMD_LOOKUP,
-        IP_CMD_SET_FWD,
-        IP_CMD_GET_FWD,
-        IP_CMD_SET_IF_FWD,
-        IP_CMD_GET_STATS,
-        IP_CMD_CLEAR_STATS,
-        IP_CMD_DUMP_CONFIG,
-        IP_CMD_LOAD_CONFIG);
+        "  \"keys\": {\n"
+        "    \"IPV4_FWD\": {\n"
+        "      \"type\": \"str\", \"description\": \"Enable global IPv4 packet forwarding\",\n"
+        "      \"default\": \"true\", \"choices\": [\"true\", \"false\"],\n"
+        "      \"mandatory\": false, \"group\": \"Forwarding\"\n"
+        "    },\n"
+        "    \"IPV6_FWD\": {\n"
+        "      \"type\": \"str\", \"description\": \"Enable global IPv6 packet forwarding\",\n"
+        "      \"default\": \"true\", \"choices\": [\"true\", \"false\"],\n"
+        "      \"mandatory\": false, \"group\": \"Forwarding\"\n"
+        "    },\n"
+        "    \"ECMP_HASH_MODE\": {\n"
+        "      \"type\": \"int\", \"description\": \"ECMP hash field bitmask (1=src_ip 2=dst_ip 4=src_port 8=dst_port 16=proto)\",\n"
+        "      \"default\": 3, \"min\": 0, \"max\": 31,\n"
+        "      \"mandatory\": false, \"group\": \"ECMP\"\n"
+        "    },\n"
+        "    \"DEFAULT_TTL\": {\n"
+        "      \"type\": \"int\", \"description\": \"Default TTL for originated IPv4 packets\",\n"
+        "      \"default\": 64, \"min\": 1, \"max\": 255,\n"
+        "      \"mandatory\": false, \"group\": \"Forwarding\"\n"
+        "    }\n"
+        "  }\n"
+        "}\n");
     fclose(f);
     printf("[ip] schema written to %s\n", path);
 }

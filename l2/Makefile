@@ -43,9 +43,9 @@ test: $(TARGET)
 	@kill $$(pgrep l2d) 2>/dev/null || true
 	@echo "=== done ==="
 
-STP_SOCK   = /tmp/l2stp.sock
-L2RIB_SOCK = /tmp/l2rib.sock
-FDB_SOCK   = /tmp/l2fdb.sock
+STP_SOCK   = /tmp/stp.sock
+L2RIB_SOCK = /tmp/rib.sock
+FDB_SOCK   = /tmp/fdb.sock
 
 clean:
 	rm -f $(OBJS) $(TARGET)

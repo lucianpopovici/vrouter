@@ -459,6 +459,52 @@ char *ip_ipc_handle(ip_ctx_t *ctx, const char *req, size_t req_len)
         jstr(req,"path",path,sizeof(path));
         return ip_load_config(ctx,path)==IP_OK ? ok_json() : err_json("load failed");
     }
+    if (!strcmp(cmd,"get")) {
+        char key[64]={0}; jstr(req,"key",key,sizeof(key));
+        bool v4=ip_get_forwarding(ctx,AF_INET), v6=ip_get_forwarding(ctx,AF_INET6);
+        pthread_rwlock_rdlock(&ctx->cfg.lock);
+        uint32_t hmode=ctx->cfg.ecmp_hash_mode;
+        uint8_t ttl=ctx->cfg.default_ttl;
+        pthread_rwlock_unlock(&ctx->cfg.lock);
+        char *buf=malloc(128);
+        if (!strcmp(key,"IPV4_FWD"))
+            snprintf(buf,128,"{\"status\":\"ok\",\"value\":\"%s\"}\n",v4?"true":"false");
+        else if (!strcmp(key,"IPV6_FWD"))
+            snprintf(buf,128,"{\"status\":\"ok\",\"value\":\"%s\"}\n",v6?"true":"false");
+        else if (!strcmp(key,"ECMP_HASH_MODE"))
+            snprintf(buf,128,"{\"status\":\"ok\",\"value\":\"%u\"}\n",hmode);
+        else if (!strcmp(key,"DEFAULT_TTL"))
+            snprintf(buf,128,"{\"status\":\"ok\",\"value\":\"%u\"}\n",ttl);
+        else { free(buf); return err_json("unknown key"); }
+        return buf;
+    }
+    if (!strcmp(cmd,"set")) {
+        char key[64]={0}, val[64]={0};
+        jstr(req,"key",key,sizeof(key)); jstr(req,"value",val,sizeof(val));
+        if (!strcmp(key,"IPV4_FWD")) {
+            ip_set_forwarding(ctx,AF_INET,strcmp(val,"false")!=0&&strcmp(val,"0")!=0);
+            return ok_json();
+        }
+        if (!strcmp(key,"IPV6_FWD")) {
+            ip_set_forwarding(ctx,AF_INET6,strcmp(val,"false")!=0&&strcmp(val,"0")!=0);
+            return ok_json();
+        }
+        if (!strcmp(key,"ECMP_HASH_MODE")) {
+            long v=atol(val); if (v<0) return err_json("invalid value");
+            pthread_rwlock_wrlock(&ctx->cfg.lock);
+            ctx->cfg.ecmp_hash_mode=(uint32_t)v;
+            pthread_rwlock_unlock(&ctx->cfg.lock);
+            return ok_json();
+        }
+        if (!strcmp(key,"DEFAULT_TTL")) {
+            long v=atol(val); if (v<1||v>255) return err_json("value out of range");
+            pthread_rwlock_wrlock(&ctx->cfg.lock);
+            ctx->cfg.default_ttl=(uint8_t)v;
+            pthread_rwlock_unlock(&ctx->cfg.lock);
+            return ok_json();
+        }
+        return err_json("unknown key");
+    }
     if (!strcmp(cmd,"ping")) return strdup("{\"status\":\"ok\",\"msg\":\"pong\",\"module\":\"ip\"}\n");
     return err_json("unknown command");
 }

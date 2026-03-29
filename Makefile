@@ -138,36 +138,42 @@ install: all
 # ================================================================
 
 run-l3: l3
+	@pkill -f '[/]fibd\b' 2>/dev/null; pkill -f 'fibd\b' 2>/dev/null; sleep 0.2; rm -f $(SOCK_DIR)/fibd.sock $(SOCK_DIR)/ribd.sock
 	@echo "[l3] starting fibd (sock_dir=$(SOCK_DIR))..."
 	@$(L3_BIN) -S $(SOCK_DIR) &
 	@sleep 0.3
 	@echo "[l3] fibd running ($(SOCK_DIR)/fibd.sock  $(SOCK_DIR)/ribd.sock)"
 
 run-l2: l2
+	@pkill -f '[/]l2d\b' 2>/dev/null; pkill -f 'l2d\b' 2>/dev/null; sleep 0.2
 	@echo "[l2] starting l2d (mode=$(MODE) sock_dir=$(SOCK_DIR))..."
 	@$(L2_BIN) -m $(MODE) -S $(SOCK_DIR) &
 	@sleep 0.3
 	@echo "[l2] l2d running (9 sockets under $(SOCK_DIR)/)"
 
 run-ip: ip
+	@pkill -f '[/]ip_daemon\b' 2>/dev/null; pkill -f 'ip_daemon\b' 2>/dev/null; sleep 0.2; rm -f $(SOCK_DIR)/ip.sock
 	@echo "[ip] starting ip_daemon (sock=$(SOCK_DIR)/ip.sock)..."
 	@$(IP_BIN) -s $(SOCK_DIR)/ip.sock &
 	@sleep 0.3
 	@echo "[ip] ip_daemon running ($(SOCK_DIR)/ip.sock)"
 
 run-vrf: vrf
+	@pkill -f '[/]vrf_daemon\b' 2>/dev/null; pkill -f 'vrf_daemon\b' 2>/dev/null; sleep 0.2; rm -f $(SOCK_DIR)/vrf.sock
 	@echo "[vrf] starting vrf_daemon (sock=$(SOCK_DIR)/vrf.sock)..."
 	@$(VRF_BIN) -s $(SOCK_DIR)/vrf.sock &
 	@sleep 0.3
 	@echo "[vrf] vrf_daemon running ($(SOCK_DIR)/vrf.sock)"
 
 run-evpn: evpn
+	@pkill -f '[/]evpn_daemon\b' 2>/dev/null; pkill -f 'evpn_daemon\b' 2>/dev/null; sleep 0.2; rm -f $(SOCK_DIR)/evpn.sock
 	@echo "[evpn] starting evpn_daemon (sock=$(SOCK_DIR)/evpn.sock)..."
 	@$(EVPN_BIN) -s $(SOCK_DIR)/evpn.sock &
 	@sleep 0.3
 	@echo "[evpn] evpn_daemon running ($(SOCK_DIR)/evpn.sock)"
 
 run-vxlan: vxlan
+	@pkill -f '[/]vxlan_daemon\b' 2>/dev/null; pkill -f 'vxlan_daemon\b' 2>/dev/null; sleep 0.2; rm -f $(SOCK_DIR)/vxlan.sock
 	@echo "[vxlan] starting vxlan_daemon (sock=$(SOCK_DIR)/vxlan.sock)..."
 	@$(VXLAN_BIN) -s $(SOCK_DIR)/vxlan.sock &
 	@sleep 0.3
@@ -179,12 +185,16 @@ run: run-l3 run-l2 run-ip run-vrf run-evpn run-vxlan
 
 stop:
 	@echo "Stopping daemons..."
-	@pkill -x fibd        2>/dev/null && echo "  fibd stopped"        || echo "  fibd was not running"
-	@pkill -x l2d         2>/dev/null && echo "  l2d  stopped"        || echo "  l2d  was not running"
-	@pkill -x ip_daemon   2>/dev/null && echo "  ip_daemon stopped"   || echo "  ip_daemon was not running"
-	@pkill -x vrf_daemon  2>/dev/null && echo "  vrf_daemon stopped"  || echo "  vrf_daemon was not running"
-	@pkill -x evpn_daemon 2>/dev/null && echo "  evpn_daemon stopped" || echo "  evpn_daemon was not running"
-	@pkill -x vxlan_daemon 2>/dev/null && echo "  vxlan_daemon stopped" || echo "  vxlan_daemon was not running"
+	@pkill -f '[/]fibd\b'        2>/dev/null; pkill -f 'fibd\b'        2>/dev/null; echo "  fibd stopped"
+	@pkill -f '[/]l2d\b'         2>/dev/null; pkill -f 'l2d\b'         2>/dev/null; echo "  l2d stopped"
+	@pkill -f '[/]ip_daemon\b'   2>/dev/null; pkill -f 'ip_daemon\b'   2>/dev/null; echo "  ip_daemon stopped"
+	@pkill -f '[/]vrf_daemon\b'  2>/dev/null; pkill -f 'vrf_daemon\b'  2>/dev/null; echo "  vrf_daemon stopped"
+	@pkill -f '[/]evpn_daemon\b' 2>/dev/null; pkill -f 'evpn_daemon\b' 2>/dev/null; echo "  evpn_daemon stopped"
+	@pkill -f '[/]vxlan_daemon\b' 2>/dev/null; pkill -f 'vxlan_daemon\b' 2>/dev/null; echo "  vxlan_daemon stopped"
+	@sleep 0.3
+	@rm -f $(SOCK_DIR)/ip.sock $(SOCK_DIR)/vrf.sock $(SOCK_DIR)/evpn.sock $(SOCK_DIR)/vxlan.sock
+	@rm -f $(SOCK_DIR)/fibd.sock $(SOCK_DIR)/ribd.sock
+	@echo "  socket files removed"
 
 status:
 	@echo "=== Daemon processes ==="

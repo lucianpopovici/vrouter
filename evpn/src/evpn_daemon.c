@@ -18,69 +18,22 @@ static void write_schema(const char *path)
 {
     FILE *f = fopen(path, "w"); if (!f) return;
     fprintf(f,
-        "{\n  \"module\": \"evpn\",  \"version\": \"1.0\",\n"
-        "  \"commands\": [\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\",\"l2_vni\":\"int\","
-        "\"l3_vni\":\"int\",\"vrf_id\":\"int\",\"flags\":\"int\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\",\"rd\":\"str ASN:local\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\",\"rt\":\"str\","
-        "\"export\":\"bool\",\"import\":\"bool\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\",\"rt\":\"str\","
-        "\"export\":\"bool\",\"import\":\"bool\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\","
-        "\"ip\":\"str\",\"mac\":\"str\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"ip\":\"str\",\"encap\":\"int\","
-        "\"flags\":\"int\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"ip\":\"str\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\",\"mac\":\"str\","
-        "\"ip\":\"str\",\"flags\":\"int\",\"vtep\":\"str\","
-        "\"ifindex\":\"int\",\"rd\":\"str\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\","
-        "\"mac\":\"str\",\"ip\":\"str\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\","
-        "\"mac\":\"str\",\"ip\":\"str\",\"ifindex\":\"int\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\","
-        "\"mac\":\"str\",\"ip\":\"str\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\","
-        "\"vtep\":\"str (optional, NULL=all remote)\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\","
-        "\"vtep\":\"str\",\"rd\":\"str\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\",\"vtep\":\"str\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\",\"prefix\":\"str\","
-        "\"gw_ip\":\"str\",\"gw_mac\":\"str\",\"vtep\":\"str\","
-        "\"local\":\"bool\",\"rd\":\"str\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\",\"prefix\":\"str\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int\",\"dst\":\"str\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"esi\":\"str\",\"es_type\":\"int\","
-        "\"sys_mac\":\"str\",\"local_disc\":\"int\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"esi\":\"str\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int (optional)\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"evi_id\":\"int (optional)\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"path\":\"str (optional)\"}},\n"
-        "    {\"cmd\":\"%s\",\"args\":{\"path\":\"str (optional)\"}}\n"
-        "  ]\n}\n",
-        EVPN_CMD_CREATE_EVI, EVPN_CMD_DELETE_EVI,
-        EVPN_CMD_LIST_EVIS,  EVPN_CMD_GET_EVI,
-        EVPN_CMD_SET_EVI_RD, EVPN_CMD_ADD_EVI_RT,
-        EVPN_CMD_DEL_EVI_RT, EVPN_CMD_SET_IRB,
-        EVPN_CMD_ADD_VTEP,   EVPN_CMD_DEL_VTEP,   EVPN_CMD_LIST_VTEPS,
-        EVPN_CMD_ADD_MAC,    EVPN_CMD_DEL_MAC,
-        EVPN_CMD_LEARN_MAC,  EVPN_CMD_LIST_MACS,
-        EVPN_CMD_LOOKUP_MAC, EVPN_CMD_FLUSH_MAC,
-        EVPN_CMD_ADD_IMET,   EVPN_CMD_DEL_IMET,   EVPN_CMD_LIST_IMET,
-        EVPN_CMD_ADD_PREFIX, EVPN_CMD_DEL_PREFIX,
-        EVPN_CMD_LIST_PREFIXES, EVPN_CMD_LOOKUP_PREFIX,
-        EVPN_CMD_ADD_ES,     EVPN_CMD_DEL_ES,     EVPN_CMD_LIST_ES,
-        EVPN_CMD_GET_STATS,  EVPN_CMD_CLEAR_STATS,
-        EVPN_CMD_DUMP_CONFIG, EVPN_CMD_LOAD_CONFIG);
+        "{\n"
+        "  \"module\": \"evpn\",\n"
+        "  \"version\": \"1.0\",\n"
+        "  \"keys\": {\n"
+        "    \"LOCAL_ASN\": {\n"
+        "      \"type\": \"int\", \"description\": \"Local BGP AS number (read-only, set via -a flag)\",\n"
+        "      \"default\": 0, \"min\": 0, \"max\": 4294967295,\n"
+        "      \"mandatory\": false, \"group\": \"BGP\"\n"
+        "    },\n"
+        "    \"LOCAL_VTEP\": {\n"
+        "      \"type\": \"str\", \"description\": \"Local VTEP IP address (read-only, set via -l flag)\",\n"
+        "      \"default\": \"\",\n"
+        "      \"mandatory\": false, \"group\": \"BGP\"\n"
+        "    }\n"
+        "  }\n"
+        "}\n");
     fclose(f);
     printf("[evpn] schema written to %s\n", path);
 }

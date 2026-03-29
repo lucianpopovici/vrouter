@@ -161,6 +161,12 @@ class ModuleAdapter:
             raise ValueError(f"No default defined for '{key}'")
         self.set(key, str(default))
 
+    def op(self, cmd: str, **kwargs) -> dict:
+        """Send an arbitrary operational command to the daemon's config socket."""
+        payload = {"cmd": cmd}
+        payload.update(kwargs)
+        return self._send(self.CONFIG_SOCK, payload)
+
     # ── Liveness ───────────────────────────────────────────────
 
     @property

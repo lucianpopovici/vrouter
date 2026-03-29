@@ -1,12 +1,8 @@
-"""modules/overlay.py — adapters for ip, vrf, evpn, vxlan daemons.
-
-These daemons expose operational commands (add/del/lookup) rather than
-a set of persistent config keys, so schema_rows() returns an empty list.
-The adapters provide liveness detection via ping so project-cli can show
-their status.
-"""
+"""modules/overlay.py — adapters for ip, vrf, evpn, vxlan daemons."""
 from __future__ import annotations
 from .base import ModuleAdapter
+
+_READ_ONLY = "read-only: use daemon startup flags to change this parameter"
 
 
 class IpAdapter(ModuleAdapter):
@@ -16,9 +12,6 @@ class IpAdapter(ModuleAdapter):
     CONFIG_SOCK = "ip"
     VERSION     = "1.0.0"
 
-    def schema_rows(self) -> list[dict]:
-        return []
-
 
 class VrfAdapter(ModuleAdapter):
     """VRF instances with ECMP + inter-VRF route leaking daemon."""
@@ -26,9 +19,6 @@ class VrfAdapter(ModuleAdapter):
     SOCKETS     = {"vrf": "vrf.sock"}
     CONFIG_SOCK = "vrf"
     VERSION     = "1.0.0"
-
-    def schema_rows(self) -> list[dict]:
-        return []
 
 
 class EvpnAdapter(ModuleAdapter):
@@ -38,16 +28,22 @@ class EvpnAdapter(ModuleAdapter):
     CONFIG_SOCK = "evpn"
     VERSION     = "1.0.0"
 
-    def schema_rows(self) -> list[dict]:
-        return []
+    def set(self, key: str, value: str):
+        raise ValueError(_READ_ONLY)
+
+    def reset(self, key: str):
+        raise ValueError(_READ_ONLY)
 
 
 class VxlanAdapter(ModuleAdapter):
     """VXLAN data plane daemon (VNI, FDB, flood lists)."""
-    SCHEMA_FILE = "vxlan_runtime.json"
+    SCHEMA_FILE = "vxlan_schema.json"
     SOCKETS     = {"vxlan": "vxlan.sock"}
     CONFIG_SOCK = "vxlan"
     VERSION     = "1.0.0"
 
-    def schema_rows(self) -> list[dict]:
-        return []
+    def set(self, key: str, value: str):
+        raise ValueError(_READ_ONLY)
+
+    def reset(self, key: str):
+        raise ValueError(_READ_ONLY)

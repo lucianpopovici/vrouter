@@ -338,6 +338,19 @@ char *vxlan_ipc_handle(vxlan_ctx_t *ctx, const char *req, size_t req_len)
         char path[256]="vxlan_runtime.json"; jstr(req,"path",path,sizeof(path));
         return vxlan_load_config(ctx,path)==VXLAN_OK?ok():err("load failed");
     }
+    if (!strcmp(cmd,"get")) {
+        char key[64]={0}; jstr(req,"key",key,sizeof(key));
+        char *buf=malloc(128);
+        if (!strcmp(key,"UDP_PORT")) {
+            snprintf(buf,128,"{\"status\":\"ok\",\"value\":\"%u\"}\n",ctx->listen_port);
+        } else if (!strcmp(key,"LOCAL_IP")) {
+            char ip_s[INET6_ADDRSTRLEN]={0};
+            vxlan_addr_to_str(&ctx->local_ip,ip_s,sizeof(ip_s));
+            snprintf(buf,128,"{\"status\":\"ok\",\"value\":\"%s\"}\n",ip_s);
+        } else { free(buf); return err("unknown key"); }
+        return buf;
+    }
+    if (!strcmp(cmd,"set")) return err("read-only: use daemon flags to change UDP_PORT/LOCAL_IP");
     if (!strcmp(cmd,"ping")) return strdup("{\"status\":\"ok\",\"msg\":\"pong\",\"module\":\"vxlan\"}\n");
     return err("unknown command");
 }
