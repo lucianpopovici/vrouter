@@ -186,7 +186,7 @@ static void handle_cmd(fib_table_t *fib, const char *req,
         jget(req, "value", value, sizeof(value));
         if (strcmp(key, "MAX_ROUTES") == 0) {
             int v = atoi(value);
-            if (v < 10 || v > 100000) {
+            if (v < 10 || v > 524288) {
                 snprintf(resp, rsz,
                     "{\"status\": \"error\", \"msg\": \"MAX_ROUTES out of range\"}");
                 return;

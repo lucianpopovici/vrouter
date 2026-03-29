@@ -28,7 +28,7 @@ int cli_write_schema(void)
         "      \"description\": \"Maximum number of FIB entries\",\n"
         "      \"default\": %d,\n"
         "      \"min\": 10,\n"
-        "      \"max\": 100000,\n"
+        "      \"max\": 524288,\n"
         "      \"mandatory\": false,\n"
         "      \"group\": \"Capacity\"\n"
         "    },\n"
@@ -107,7 +107,7 @@ int cli_load_runtime_config(fib_table_t *fib)
 
     if (json_get(buf, "MAX_ROUTES", val, sizeof(val)) == 0) {
         int v = atoi(val);
-        if (v >= 10 && v <= 100000)
+        if (v >= 10 && v <= 524288)
             fib->max_routes = (uint32_t)v;
     }
 

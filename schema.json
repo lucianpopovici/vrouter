@@ -9,7 +9,7 @@
       "description": "Maximum number of FIB entries",
       "default": 524288,
       "min": 10,
-      "max": 100000,
+      "max": 524288,
       "mandatory": false,
       "group": "Capacity"
     },
