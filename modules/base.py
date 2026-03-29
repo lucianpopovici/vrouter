@@ -71,7 +71,7 @@ class ModuleAdapter:
             s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
             s.settimeout(3)
             s.connect(path)
-            s.sendall((json.dumps(cmd) + "\n").encode())
+            s.sendall((json.dumps(cmd, separators=(',', ':')) + "\n").encode())
             data = b""
             while True:
                 chunk = s.recv(4096)

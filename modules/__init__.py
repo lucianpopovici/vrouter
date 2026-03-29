@@ -10,6 +10,7 @@ import os
 from .base import ModuleAdapter, _default_sock_dir
 from .fib import FibAdapter, RibAdapter
 from .l2d import L2dAdapter
+from .overlay import IpAdapter, VrfAdapter, EvpnAdapter, VxlanAdapter
 
 # ── Registry ──────────────────────────────────────────────────
 REGISTRY: dict[str, dict] = {
@@ -24,6 +25,22 @@ REGISTRY: dict[str, dict] = {
     "l2d": {
         "class":       L2dAdapter,
         "description": "L2 daemon — FDB, STP/RSTP/MST, VLAN, LACP, IGMP, ARP/ND",
+    },
+    "ip": {
+        "class":       IpAdapter,
+        "description": "IPv4/IPv6 address management + ECMP forwarding",
+    },
+    "vrf": {
+        "class":       VrfAdapter,
+        "description": "VRF instances with ECMP + inter-VRF route leaking",
+    },
+    "evpn": {
+        "class":       EvpnAdapter,
+        "description": "BGP EVPN control plane (Type 2/3/4/5)",
+    },
+    "vxlan": {
+        "class":       VxlanAdapter,
+        "description": "VXLAN data plane (VNI, FDB, flood lists)",
     },
     # lldp and bfd are Python modules — project-cli handles them via
     # its built-in _Adapter / LldpConfigShell path; they appear here

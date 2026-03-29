@@ -10,15 +10,15 @@ class L2dAdapter(ModuleAdapter):
     """
     SCHEMA_FILE = "l2d_schema.json"
     SOCKETS = {
-        "fdb":     "l2fdb.sock",
-        "l2rib":   "l2rib.sock",
-        "stp":     "l2stp.sock",
-        "vlan":    "l2vlan.sock",
-        "portsec": "l2portsec.sock",
-        "storm":   "l2storm.sock",
-        "igmp":    "l2igmp.sock",
-        "arp":     "l2arp.sock",
-        "lacp":    "l2lacp.sock",
+        "fdb":     "fdb.sock",
+        "l2rib":   "rib.sock",
+        "stp":     "stp.sock",
+        "vlan":    "vlan.sock",
+        "portsec": "portsec.sock",
+        "storm":   "storm.sock",
+        "igmp":    "igmp.sock",
+        "arp":     "arp.sock",
+        "lacp":    "lacp.sock",
     }
     # Mapping: schema group → which socket handles get/set for that group
     _GROUP_SOCK = {
