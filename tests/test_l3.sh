@@ -30,15 +30,18 @@ check() {
         FAIL=$((FAIL+1))
     fi
 }
-rm -f vrouter_routes.json
+
 # ── start daemon ─────────────────────────────────────────────────
 echo "=== L3 Tests ==="
 echo "    socket dir: $SOCK_DIR"
 
+# Remove any leftover persistence files from previous runs
+rm -f vrouter_routes.json vrouter_l2.json
+
 "$FIBD" -S "$SOCK_DIR" &
 FIBD_PID=$!
 
-# wait for sockets to appear (max 5s)
+# wait for sockets to appear (max 10s for slow CI runners)
 for i in $(seq 1 100); do
     [ -S "$SOCK_DIR/fibd.sock" ] && [ -S "$SOCK_DIR/ribd.sock" ] && break
     sleep 0.1
@@ -51,7 +54,11 @@ echo ""
 echo "--- Ping ---"
 check "FIB ping"  fibd.sock '{"cmd":"ping"}' 'fib'
 check "RIB ping"  ribd.sock '{"cmd":"ping"}' 'rib'
-rm -f vrouter_routes.json
+
+# ── Flush any state restored from disk ───────────────────────────
+send ribd.sock '{"cmd":"flush"}' > /dev/null
+send fibd.sock '{"cmd":"flush"}' > /dev/null
+
 # ── RIB → FIB pipeline ───────────────────────────────────────────
 echo ""
 echo "--- RIB → FIB pipeline ---"

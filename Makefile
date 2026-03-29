@@ -123,11 +123,11 @@ status:
 	done
 	@echo ""
 	@echo "=== L2 sockets (SOCK_DIR=$(SOCK_DIR)) ==="
-	@for s in $(SOCK_DIR)/l2fdb.sock $(SOCK_DIR)/l2rib.sock \
-	           $(SOCK_DIR)/l2stp.sock $(SOCK_DIR)/l2vlan.sock \
-	           $(SOCK_DIR)/l2portsec.sock $(SOCK_DIR)/l2storm.sock \
-	           $(SOCK_DIR)/l2igmp.sock $(SOCK_DIR)/l2arp.sock \
-	           $(SOCK_DIR)/l2lacp.sock; do \
+	@for s in $(SOCK_DIR)/fdb.sock $(SOCK_DIR)/rib.sock \
+	           $(SOCK_DIR)/stp.sock $(SOCK_DIR)/vlan.sock \
+	           $(SOCK_DIR)/portsec.sock $(SOCK_DIR)/storm.sock \
+	           $(SOCK_DIR)/igmp.sock $(SOCK_DIR)/arp.sock \
+	           $(SOCK_DIR)/lacp.sock; do \
 	  if [ -S "$$s" ]; then \
 	    printf "  %-30s  " "$$s"; \
 	    echo '{"cmd":"ping"}' | nc -U "$$s" -w1 2>/dev/null || echo "no response"; \
@@ -155,12 +155,11 @@ test-l3: run-l3
 test-l2: run-l2
 	@echo "=== L2 smoke test ==="
 	@sleep 0.2
-	@for s in /tmp/l2fdb.sock /tmp/l2rib.sock /tmp/l2stp.sock \
-	           /tmp/l2vlan.sock /tmp/l2portsec.sock /tmp/l2storm.sock \
-	           /tmp/l2igmp.sock /tmp/l2arp.sock /tmp/l2lacp.sock; do \
+	@for s in /tmp/fdb.sock /tmp/rib.sock /tmp/stp.sock \
+	           /tmp/vlan.sock /tmp/portsec.sock /tmp/storm.sock \
+	           /tmp/igmp.sock /tmp/arp.sock /tmp/lacp.sock; do \
 	  printf "  %-24s  " "$$s"; \
 	  echo '{"cmd":"ping"}' | nc -U "$$s" -w1 2>/dev/null || echo "FAILED"; \
-	  echo ""; \
 	done
 	@pkill -x l2d 2>/dev/null; echo "=== L2 test done ==="
 
