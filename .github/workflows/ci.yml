@@ -67,7 +67,7 @@ jobs:
       - name: Run L3 tests
         run: |
           chmod +x l3/fibd
-        run: bash tests/test_l3.sh
+          bash tests/test_l3.sh
 
   # ──────────────────────────────────────────────────────────────
   # Job 4: L2 functional tests
@@ -86,7 +86,7 @@ jobs:
       - name: Run L2 tests
         run: |
           chmod +x l2/l2d
-        run: bash tests/test_l2.sh
+          bash tests/test_l2.sh
 
   # ──────────────────────────────────────────────────────────────
   # Job 5: Persistence + SIGHUP tests
@@ -105,7 +105,7 @@ jobs:
       - name: Run persistence tests
         run: |
           chmod +x l3/fibd l2/l2d
-        run: bash tests/test_persist.sh
+          bash tests/test_persist.sh
 
   # ──────────────────────────────────────────────────────────────
   # Job 6: Build with stricter flags (catches latent issues)
