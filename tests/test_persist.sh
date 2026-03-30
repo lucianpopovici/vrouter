@@ -58,10 +58,10 @@ L2_PID=$!
 
 wait_sock "$SOCK_DIR/fibd.sock"
 wait_sock "$SOCK_DIR/ribd.sock"
-wait_sock "$SOCK_DIR/l2fdb.sock"
-wait_sock "$SOCK_DIR/l2stp.sock"
-wait_sock "$SOCK_DIR/l2lacp.sock"
-wait_sock "$SOCK_DIR/l2vlan.sock"
+wait_sock "$SOCK_DIR/fdb.sock"
+wait_sock "$SOCK_DIR/stp.sock"
+wait_sock "$SOCK_DIR/lacp.sock"
+wait_sock "$SOCK_DIR/vlan.sock"
 
 # L3: add routes from multiple sources
 send "$SOCK_DIR/ribd.sock" '{"cmd":"add","prefix":"10.0.0.0/8","nexthop":"1.1.1.1","iface":"eth0","source":"ospf"}' >/dev/null
@@ -72,11 +72,11 @@ check "L3 routes live before restart" \
     "$SOCK_DIR/fibd.sock" '{"cmd":"lookup","addr":"10.1.2.5"}' '2.2.2.2'
 
 # L2: static FDB, VLAN, STP priority, LACP
-send "$SOCK_DIR/l2fdb.sock"  '{"cmd":"learn","mac":"aa:bb:cc:dd:ee:01","vlan":"10","port":"eth0","flags":"static"}' >/dev/null
-send "$SOCK_DIR/l2vlan.sock" '{"cmd":"add","vlan":"200","name":"persist-test"}' >/dev/null
-send "$SOCK_DIR/l2stp.sock"  '{"cmd":"set","key":"STP_PRIORITY","value":"8192"}' >/dev/null
-send "$SOCK_DIR/l2lacp.sock" '{"cmd":"lag_add","lag":"bond0","key":"5"}' >/dev/null
-send "$SOCK_DIR/l2lacp.sock" '{"cmd":"member_add","lag":"bond0","port":"eth0","mode":"active"}' >/dev/null
+send "$SOCK_DIR/fdb.sock"  '{"cmd":"learn","mac":"aa:bb:cc:dd:ee:01","vlan":"10","port":"eth0","flags":"static"}' >/dev/null
+send "$SOCK_DIR/vlan.sock" '{"cmd":"add","vlan":"200","name":"persist-test"}' >/dev/null
+send "$SOCK_DIR/stp.sock"  '{"cmd":"set","key":"STP_PRIORITY","value":"8192"}' >/dev/null
+send "$SOCK_DIR/lacp.sock" '{"cmd":"lag_add","lag":"bond0","key":"5"}' >/dev/null
+send "$SOCK_DIR/lacp.sock" '{"cmd":"member_add","lag":"bond0","port":"eth0","mode":"active"}' >/dev/null
 
 sleep 0.1   # let writes settle
 
@@ -128,10 +128,10 @@ L2_PID=$!
 
 wait_sock "$SOCK_DIR2/fibd.sock"
 wait_sock "$SOCK_DIR2/ribd.sock"
-wait_sock "$SOCK_DIR2/l2fdb.sock"
-wait_sock "$SOCK_DIR2/l2stp.sock"
-wait_sock "$SOCK_DIR2/l2lacp.sock"
-wait_sock "$SOCK_DIR2/l2vlan.sock"
+wait_sock "$SOCK_DIR2/fdb.sock"
+wait_sock "$SOCK_DIR2/stp.sock"
+wait_sock "$SOCK_DIR2/lacp.sock"
+wait_sock "$SOCK_DIR2/vlan.sock"
 sleep 0.3   # let restore settle
 
 # L3 restore
@@ -141,13 +141,13 @@ check "L3 static /12 restored" "$SOCK_DIR2/fibd.sock" '{"cmd":"lookup","addr":"1
 
 # L2 restore
 check "L2 static FDB restored" \
-    "$SOCK_DIR2/l2fdb.sock" '{"cmd":"lookup","mac":"aa:bb:cc:dd:ee:01","vlan":"10"}' 'eth0'
+    "$SOCK_DIR2/fdb.sock" '{"cmd":"lookup","mac":"aa:bb:cc:dd:ee:01","vlan":"10"}' 'eth0'
 check "L2 VLAN 200 restored" \
-    "$SOCK_DIR2/l2vlan.sock" '{"cmd":"show"}' 'persist-test'
+    "$SOCK_DIR2/vlan.sock" '{"cmd":"show"}' 'persist-test'
 check "L2 STP priority 8192 restored" \
-    "$SOCK_DIR2/l2stp.sock" '{"cmd":"get","key":"STP_PRIORITY"}' '8192'
+    "$SOCK_DIR2/stp.sock" '{"cmd":"get","key":"STP_PRIORITY"}' '8192'
 check "L2 LACP bond0 restored" \
-    "$SOCK_DIR2/l2lacp.sock" '{"cmd":"show"}' 'bond0'
+    "$SOCK_DIR2/lacp.sock" '{"cmd":"show"}' 'bond0'
 
 # ── Summary ───────────────────────────────────────────────────
 echo ""
