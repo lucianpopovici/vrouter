@@ -189,6 +189,7 @@ static void test_ecmp(void)
         else if (!strcmp(s,"192.168.1.2")) c2++;
         else c3++;
     }
+    (void)c3;
     CHECK(c1>c2*5, "weighted: nh1 dominates");
 
     /* Remove one path */

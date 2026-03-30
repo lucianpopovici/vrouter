@@ -322,7 +322,7 @@ static void handle(stp_bridge_t *br, fdb_table_t *fdb,
             else if(strcmp(val,"rstp")==0) br->mode=STP_MODE_RSTP;
             else if(strcmp(val,"mst" )==0) br->mode=STP_MODE_MST;
             else { snprintf(resp,rsz,"{\"status\":\"error\",\"msg\":\"invalid mode\"}"); return; }
-            if (cfg) snprintf(cfg->stp_mode, sizeof(cfg->stp_mode), "%s", val);
+            if (cfg) snprintf(cfg->stp_mode, sizeof(cfg->stp_mode), "%.*s", (int)(sizeof(cfg->stp_mode) - 1), val);
             l2_cli_save_key(key,val);
         } else if (strcmp(key,"STP_PRIORITY")==0) {
             int v=atoi(val);
@@ -350,8 +350,8 @@ static void handle(stp_bridge_t *br, fdb_table_t *fdb,
             if (cfg) cfg->stp_fwd_delay=(uint16_t)v;
             l2_cli_save_key(key,val);
         } else if (strcmp(key,"MST_REGION")==0) {
-            snprintf(br->mst_region, sizeof(br->mst_region), "%s", val);
-            if (cfg) snprintf(cfg->mst_region, sizeof(cfg->mst_region), "%s", val);
+            snprintf(br->mst_region, sizeof(br->mst_region), "%.*s", (int)(sizeof(br->mst_region) - 1), val);
+            if (cfg) snprintf(cfg->mst_region, sizeof(cfg->mst_region), "%.*s", (int)(sizeof(cfg->mst_region) - 1), val);
             l2_cli_save_key(key,val);
         } else if (strcmp(key,"MST_REVISION")==0) {
             int v=atoi(val);

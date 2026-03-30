@@ -1,0 +1,16 @@
+{
+  "module": "vxlan",
+  "version": "1.0",
+  "keys": {
+    "UDP_PORT": {
+      "type": "int", "description": "VXLAN UDP listen port (read-only, set via -p flag)",
+      "default": 4789, "min": 1, "max": 65535,
+      "mandatory": false, "group": "Network"
+    },
+    "LOCAL_IP": {
+      "type": "str", "description": "Local VTEP IP address (read-only, set via -l flag)",
+      "default": "",
+      "mandatory": false, "group": "Network"
+    }
+  }
+}

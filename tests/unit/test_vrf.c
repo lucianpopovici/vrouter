@@ -196,6 +196,7 @@ static void test_ecmp(void)
         else count_nh3++;
     }
     /* nh1 weight=10, nh2 weight=1, nh3 weight=1 → nh1 should dominate */
+    (void)count_nh3;
     CHECK(count_nh1 > count_nh2 * 5, "weighted: nh1 gets majority");
 
     /* Remove one nexthop, verify group shrinks */
