@@ -142,7 +142,32 @@ jobs:
         run: make all -j$(nproc) MODE=debug
 
   # ──────────────────────────────────────────────────────────────
-  # Job 8: Build matrix (compilers)
+  # Job 8: Static analysis (clang-analyzer)
+  # ──────────────────────────────────────────────────────────────
+  static-analysis:
+    name: Static Analysis (clang-analyzer)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install clang-tools
+        run: sudo apt-get update -qq && sudo apt-get install -y clang clang-tools make
+      - name: Analyze L3
+        run: scan-build --status-bugs -o /tmp/scan-l3 make -C src/l3 CC=clang
+      - name: Analyze L2
+        run: scan-build --status-bugs -o /tmp/scan-l2 make -C src/l2 CC=clang
+      - name: Upload scan reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-analyzer-reports
+          path: |
+            /tmp/scan-l3
+            /tmp/scan-l2
+          retention-days: 7
+
+  # ──────────────────────────────────────────────────────────────
+  # Job 9: Build matrix (compilers)
   # ──────────────────────────────────────────────────────────────
   build-matrix:
     name: Build (${{ matrix.compiler }})
