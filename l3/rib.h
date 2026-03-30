@@ -16,23 +16,8 @@ typedef enum {
     RIB_SRC_COUNT
 } rib_source_t;
 
-static const uint8_t RIB_DEFAULT_AD[RIB_SRC_COUNT] = {
-    [RIB_SRC_CONNECTED] =   0,
-    [RIB_SRC_STATIC]    =   1,
-    [RIB_SRC_EBGP]      =  20,
-    [RIB_SRC_OSPF]      = 110,
-    [RIB_SRC_IBGP]      = 200,
-    [RIB_SRC_UNKNOWN]   = 255,
-};
-
-static const char * const RIB_SRC_NAME[RIB_SRC_COUNT] = {
-    [RIB_SRC_CONNECTED] = "connected",
-    [RIB_SRC_STATIC]    = "static",
-    [RIB_SRC_EBGP]      = "ebgp",
-    [RIB_SRC_OSPF]      = "ospf",
-    [RIB_SRC_IBGP]      = "ibgp",
-    [RIB_SRC_UNKNOWN]   = "unknown",
-};
+extern const uint8_t     RIB_DEFAULT_AD[RIB_SRC_COUNT];
+extern const char *const RIB_SRC_NAME[RIB_SRC_COUNT];
 
 /* ─── Hash table parameters ─────────────────────────────────── */
 #define RIB_BUCKETS        1048576  /* 1M buckets: O(1) to 800K routes */
@@ -72,6 +57,7 @@ typedef struct {
     uint64_t      n_deleted;
     uint64_t      n_fib_updates;
     uint64_t      n_collisions;
+    rib_entry_t  *free_list;    /* singly-linked reclaim list */
 } rib_table_t;
 
 /* ─── Callback ──────────────────────────────────────────────── */
@@ -98,8 +84,8 @@ int  rib_del(rib_table_t *rib,
              rib_source_t source,
              rib_fib_cb   cb, void *cb_ctx);
 
-const rib_entry_t     *rib_find(const rib_table_t *rib,
-                                 const char *prefix_cidr);
+int                    rib_find(const rib_table_t *rib,
+                                 const char *prefix_cidr, rib_entry_t *out);
 const rib_candidate_t *rib_best(const rib_entry_t *entry);
 
 int  rib_source_from_str(const char *s);

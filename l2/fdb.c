@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <stdatomic.h>
 
 /* ─── Hash: FNV-1a over mac[6] + vlan ──────────────────────── */
 static uint32_t fdb_hash(const uint8_t mac[6], uint16_t vlan)
@@ -18,9 +19,14 @@ static uint32_t fdb_hash(const uint8_t mac[6], uint16_t vlan)
 /* ─── Pool allocator (caller must hold write lock) ───────────── */
 static fdb_entry_t *pool_alloc(fdb_table_t *fdb)
 {
-    if (fdb->pool_used >= FDB_MAX_ENTRIES) return NULL;
-    fdb_entry_t *e = &fdb->pool[fdb->pool_used++];
-    memset(e, 0, sizeof(*e));
+    fdb_entry_t *e = NULL;
+    if (fdb->free_list) {
+        e = fdb->free_list;
+        fdb->free_list = e->next;
+    } else if (fdb->pool_used < FDB_MAX_ENTRIES) {
+        e = &fdb->pool[fdb->pool_used++];
+    }
+    if (e) memset(e, 0, sizeof(*e));
     return e;
 }
 
@@ -92,28 +98,29 @@ out:
 }
 
 /* ─── Lookup ─────────────────────────────────────────────────── */
-const fdb_entry_t *fdb_lookup(fdb_table_t *fdb,
-                               const uint8_t mac[6], uint16_t vlan)
+int fdb_lookup(fdb_table_t *fdb,
+               const uint8_t mac[6], uint16_t vlan, fdb_entry_t *out)
 {
     pthread_rwlock_rdlock(&fdb->lock);
 
-    fdb->total_lookups++;
+    atomic_fetch_add_explicit(&fdb->total_lookups, 1, memory_order_relaxed);
     uint32_t     idx = fdb_hash(mac, vlan);
     fdb_entry_t *e   = fdb->buckets[idx];
 
     while (e) {
         if (memcmp(e->mac, mac, 6) == 0 && e->vlan == vlan) {
-            e->hit_count++;
-            fdb->total_hits++;
+            atomic_fetch_add_explicit(&e->hit_count,     1, memory_order_relaxed);
+            atomic_fetch_add_explicit(&fdb->total_hits,  1, memory_order_relaxed);
+            if (out) *out = *e;
             pthread_rwlock_unlock(&fdb->lock);
-            return e;
+            return 0;
         }
         e = e->next;
     }
 
-    fdb->total_misses++;
+    atomic_fetch_add_explicit(&fdb->total_misses, 1, memory_order_relaxed);
     pthread_rwlock_unlock(&fdb->lock);
-    return NULL;  /* miss → flood */
+    return -1;  /* miss → flood */
 }
 
 /* ─── Delete ─────────────────────────────────────────────────── */
@@ -130,6 +137,8 @@ int fdb_delete(fdb_table_t *fdb, const uint8_t mac[6], uint16_t vlan)
         if (memcmp(e->mac, mac, 6) == 0 && e->vlan == vlan) {
             *pp = e->next;
             memset(e, 0, sizeof(*e));
+            e->next = fdb->free_list;
+            fdb->free_list = e;
             fdb->count--;
             rc = 0;
             break;
@@ -155,6 +164,8 @@ int fdb_flush_port(fdb_table_t *fdb, const char *port)
             if (strncmp(e->port, port, FDB_IFNAME_LEN) == 0) {
                 *pp = e->next;
                 memset(e, 0, sizeof(*e));
+                e->next = fdb->free_list;
+                fdb->free_list = e;
                 fdb->count--;
                 removed++;
             } else {
@@ -180,6 +191,8 @@ int fdb_flush_vlan(fdb_table_t *fdb, uint16_t vlan)
             if (e->vlan == vlan) {
                 *pp = e->next;
                 memset(e, 0, sizeof(*e));
+                e->next = fdb->free_list;
+                fdb->free_list = e;
                 fdb->count--;
                 removed++;
             } else {
@@ -199,6 +212,7 @@ void fdb_flush_all(fdb_table_t *fdb)
     memset(fdb->pool,    0, sizeof(fdb->pool));
     fdb->count     = 0;
     fdb->pool_used = 0;
+    fdb->free_list = NULL;
     pthread_rwlock_unlock(&fdb->lock);
 }
 
@@ -218,8 +232,10 @@ int fdb_age_sweep(fdb_table_t *fdb)
                 (now - e->last_seen) >= (time_t)e->age_sec) {
                 *pp = e->next;
                 memset(e, 0, sizeof(*e));
+                e->next = fdb->free_list;
+                fdb->free_list = e;
                 fdb->count--;
-                fdb->entries_aged++;
+                atomic_fetch_add_explicit(&fdb->entries_aged, 1, memory_order_relaxed);
                 removed++;
             } else {
                 pp = &e->next;

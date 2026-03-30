@@ -1,10 +1,12 @@
 #include "fdb_ipc.h"
 #include "fdb.h"
 #include "l2_cli.h"
+#include "../l3/json_util.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <unistd.h>
 #include <errno.h>
 #include <sys/socket.h>
@@ -14,25 +16,6 @@
 #define IPC_BUF  4096
 #define IPC_RESP 32768
 
-static int jget(const char *j, const char *k, char *b, size_t sz)
-{
-    char needle[64]; snprintf(needle, sizeof(needle), "\"%s\"", k);
-    const char *p = strstr(j, needle);
-    if (!p) return -1;
-    p += strlen(needle);
-    while (*p==' '||*p==':'||*p=='\t') p++;
-    if (*p=='"') {
-        p++; size_t i=0;
-        while (*p&&*p!='"'&&i<sz-1) b[i++]=*p++;
-        b[i]='\0';
-    } else {
-        size_t i=0;
-        while (*p&&*p!=','&&*p!='\n'&&*p!='}'&&i<sz-1) b[i++]=*p++;
-        b[i]='\0';
-        while (i>0&&(b[i-1]==' '||b[i-1]=='\r')) b[--i]='\0';
-    }
-    return 0;
-}
 
 static void handle(fdb_table_t *fdb, l2_config_t *cfg,
                    const char *req, char *resp, size_t rsz)
@@ -62,12 +45,13 @@ static void handle(fdb_table_t *fdb, l2_config_t *cfg,
         jget(req,"vlan",vlan_s,sizeof(vlan_s));
         uint8_t mac[6]; fdb_mac_parse(mac_s,mac);
         uint16_t vlan=vlan_s[0]?(uint16_t)atoi(vlan_s):1;
-        const fdb_entry_t *e=fdb_lookup(fdb,mac,vlan);
-        if (e)
+        fdb_entry_t entry;
+        if (fdb_lookup(fdb,mac,vlan,&entry)==0)
             snprintf(resp,rsz,
                 "{\"status\":\"ok\",\"mac\":\"%s\",\"vlan\":%u,"
                 "\"port\":\"%s\",\"hits\":%llu}",
-                mac_s,vlan,e->port,(unsigned long long)e->hit_count);
+                mac_s,vlan,entry.port,
+                (unsigned long long)atomic_load_explicit(&entry.hit_count, memory_order_relaxed));
         else
             snprintf(resp,rsz,
                 "{\"status\":\"miss\",\"mac\":\"%s\",\"vlan\":%u,"
@@ -117,7 +101,7 @@ static void handle(fdb_table_t *fdb, l2_config_t *cfg,
                         "{\"mac\":\"%s\",\"vlan\":%u,\"port\":\"%s\","
                         "\"flags\":%u,\"hits\":%llu}",
                         ms,e->vlan,e->port,e->flags,
-                        (unsigned long long)e->hit_count);
+                        (unsigned long long)atomic_load_explicit(&e->hit_count, memory_order_relaxed));
                     first=0;
                 }
                 e=e->next;
@@ -131,10 +115,10 @@ static void handle(fdb_table_t *fdb, l2_config_t *cfg,
             "\"lookups\":%llu,\"hits\":%llu,\"misses\":%llu,"
             "\"aged\":%llu,\"age_sec\":%u}",
             fdb->count,
-            (unsigned long long)fdb->total_lookups,
-            (unsigned long long)fdb->total_hits,
-            (unsigned long long)fdb->total_misses,
-            (unsigned long long)fdb->entries_aged,
+            (unsigned long long)atomic_load_explicit(&fdb->total_lookups, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&fdb->total_hits,    memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&fdb->total_misses,  memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&fdb->entries_aged,  memory_order_relaxed),
             fdb->age_sec);
 
     } else if (strcmp(cmd,"set_age")==0) {

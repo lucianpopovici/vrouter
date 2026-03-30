@@ -1,11 +1,12 @@
 CC      = gcc
-CFLAGS  = -Wall -Wextra -std=c99 -O2 -D_POSIX_C_SOURCE=200809L \
-          -Wno-unused-function
+CFLAGS  = -Wall -Wextra -std=c11 -O2 -D_POSIX_C_SOURCE=200809L \
+          -Wno-unused-function -I../l3
 LDFLAGS = -pthread
 
 TARGET  = l2d
 SRCS    = main_l2.c fdb.c l2rib.c stp.c fdb_ipc.c l2rib_ipc.c stp_ipc.c l2_cli.c \
-          vlan.c portsec.c storm.c igmp.c arpsnoop.c lacp.c l2_ipc_extra.c l2_persist.c
+          vlan.c portsec.c storm.c igmp.c arpsnoop.c lacp.c l2_ipc_extra.c l2_persist.c \
+          ../l3/json_util.c
 OBJS    = $(SRCS:.c=.o)
 
 .PHONY: all clean test

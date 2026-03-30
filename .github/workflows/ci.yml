@@ -28,6 +28,9 @@ jobs:
             l3/fibd
             l2/l2d
             ip/ip_daemon
+            vrf/vrf_daemon
+            evpn/evpn_daemon
+            vxlan/vxlan_daemon
           retention-days: 1
 
   # ──────────────────────────────────────────────────────────────
@@ -120,13 +123,31 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y gcc make
       - name: Build L3 with -Werror
         working-directory: l3
-        run: make -j$(nproc) CFLAGS="-Wall -Wextra -Wpedantic -std=c99 -O2 -D_POSIX_C_SOURCE=200809L -Werror"
+        run: make -j$(nproc) CFLAGS="-Wall -Wextra -Wpedantic -std=c11 -O2 -D_POSIX_C_SOURCE=200809L -Werror"
       - name: Build L2 with -Werror
         working-directory: l2
-        run: make -j$(nproc) CFLAGS="-Wall -Wextra -std=c99 -O2 -D_POSIX_C_SOURCE=200809L -Wno-unused-function -Werror"
+        run: make -j$(nproc) CFLAGS="-Wall -Wextra -std=c11 -O2 -D_POSIX_C_SOURCE=200809L -Wno-unused-function -Werror -I../l3"
 
   # ──────────────────────────────────────────────────────────────
-  # Job 7: Build matrix (compilers)
+  # Job 7: Build with sanitizers
+  # ──────────────────────────────────────────────────────────────
+  build-sanitizers:
+    name: Build (ASan + UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y gcc make
+      - name: Build L3 with sanitizers
+        working-directory: l3
+        run: make -j$(nproc) CFLAGS="-Wall -Wextra -std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -D_POSIX_C_SOURCE=200809L" LDFLAGS="-fsanitize=address,undefined"
+      - name: Build L2 with sanitizers
+        working-directory: l2
+        run: make -j$(nproc) CFLAGS="-Wall -Wextra -std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -D_POSIX_C_SOURCE=200809L -Wno-unused-function -I../l3" LDFLAGS="-fsanitize=address,undefined"
+
+  # ──────────────────────────────────────────────────────────────
+  # Job 8: Build matrix (compilers)
   # ──────────────────────────────────────────────────────────────
   build-matrix:
     name: Build (${{ matrix.compiler }})

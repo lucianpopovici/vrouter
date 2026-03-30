@@ -82,9 +82,14 @@ int fib_parse_cidr(const char *cidr, uint32_t *prefix, uint8_t *len)
  * ═══════════════════════════════════════════════════════════════ */
 static fib_entry_t *pool_alloc(fib_table_t *fib)
 {
-    if (!fib->pool || fib->pool_used >= fib->pool_size) return NULL;
-    fib_entry_t *e = &fib->pool[fib->pool_used++];
-    memset(e, 0, sizeof(*e));
+    fib_entry_t *e = NULL;
+    if (fib->free_list) {
+        e = fib->free_list;
+        fib->free_list = e->next;
+    } else if (fib->pool && fib->pool_used < fib->pool_size) {
+        e = &fib->pool[fib->pool_used++];
+    }
+    if (e) memset(e, 0, sizeof(*e));
     return e;
 }
 
@@ -174,6 +179,8 @@ int fib_del(fib_table_t *fib, const char *prefix_cidr)
             if (e->prefix == pfx && e->prefix_len == len) {
                 *pp = e->next;
                 memset(e, 0, sizeof(*e));
+                e->next = fib->free_list;
+                fib->free_list = e;
                 fib->count--;
                 rc = 0;
                 break;
@@ -192,35 +199,38 @@ int fib_del(fib_table_t *fib, const char *prefix_cidr)
  * For typical routing tables (a few thousand routes) with a
  * well-distributed hash, each lookup is effectively O(1).
  * ═══════════════════════════════════════════════════════════════ */
-const fib_entry_t *fib_lookup(fib_table_t *fib, const char *addr_str)
+int fib_lookup(fib_table_t *fib, const char *addr_str, fib_entry_t *out)
 {
     struct in_addr in;
-    if (inet_pton(AF_INET, addr_str, &in) != 1) return NULL;
+    if (inet_pton(AF_INET, addr_str, &in) != 1) return -1;
     uint32_t addr = ntohl(in.s_addr);
 
     pthread_rwlock_rdlock(&fib->lock);
-    fib->total_lookups++;
+    atomic_fetch_add_explicit(&fib->total_lookups, 1, memory_order_relaxed);
 
-    const fib_entry_t *best = NULL;
+    fib_entry_t *best = NULL;
 
     /* Walk from most-specific (/32) to least-specific (/0) */
     for (int l = 32; l >= 0; l--) {
         uint32_t mask = (l == 0) ? 0 : (0xFFFFFFFFu << (32 - l));
         uint32_t pfx  = addr & mask;
-        const fib_entry_t *e = entry_find(fib, pfx, (uint8_t)l);
+        fib_entry_t *e = entry_find(fib, pfx, (uint8_t)l);
         if (e && (e->flags & FIB_FLAG_ACTIVE)) {
             best = e;
             break;   /* longest match found */
         }
     }
 
+    int rc = -1;
     if (best) {
-        ((fib_entry_t *)best)->hit_count++;
-        fib->total_hits++;
+        atomic_fetch_add_explicit(&best->hit_count, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&fib->total_hits, 1, memory_order_relaxed);
+        if (out) *out = *best;
+        rc = 0;
     }
 
     pthread_rwlock_unlock(&fib->lock);
-    return best;
+    return rc;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -233,10 +243,11 @@ void fib_flush(fib_table_t *fib)
         memset(fib->buckets, 0, fib->n_buckets * sizeof(fib_entry_t *));
     if (fib->pool)
         memset(fib->pool, 0, fib->pool_used * sizeof(fib_entry_t));
-    fib->pool_used     = 0;
-    fib->count         = 0;
-    fib->total_lookups = 0;
-    fib->total_hits    = 0;
+    fib->pool_used  = 0;
+    fib->count      = 0;
+    fib->free_list  = NULL;
+    atomic_store_explicit(&fib->total_lookups, 0, memory_order_relaxed);
+    atomic_store_explicit(&fib->total_hits,    0, memory_order_relaxed);
     pthread_rwlock_unlock(&fib->lock);
 }
 
@@ -278,5 +289,5 @@ void fib_entry_to_str(const fib_entry_t *e, char *buf, size_t bufsz)
     inet_ntop(AF_INET, &nh_in,  nh_s,  sizeof(nh_s));
     snprintf(buf, bufsz, "%s/%u via %s dev %s metric %u hits %llu",
              pfx_s, e->prefix_len, nh_s, e->iface, e->metric,
-             (unsigned long long)e->hit_count);
+             (unsigned long long)atomic_load_explicit(&e->hit_count, memory_order_relaxed));
 }

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <time.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 /* ─── Constants ─────────────────────────────────────────────── */
 #define FDB_BUCKETS         4096        /* must be power of 2        */
@@ -25,7 +26,7 @@ typedef struct fdb_entry {
     uint32_t flags;
     uint32_t age_sec;           /* max lifetime (0 = use default)   */
     time_t   last_seen;         /* unix timestamp                    */
-    uint64_t hit_count;
+    atomic_uint_fast64_t hit_count;
     struct fdb_entry *next;     /* hash chain                        */
 } fdb_entry_t;
 
@@ -34,13 +35,14 @@ typedef struct fdb_table {
     fdb_entry_t *buckets[FDB_BUCKETS];
     int          count;
     uint32_t     age_sec;           /* default aging timer           */
-    uint64_t     total_lookups;
-    uint64_t     total_hits;
-    uint64_t     total_misses;      /* → flood                       */
-    uint64_t     entries_aged;
+    atomic_uint_fast64_t total_lookups;
+    atomic_uint_fast64_t total_hits;
+    atomic_uint_fast64_t total_misses;      /* → flood               */
+    atomic_uint_fast64_t entries_aged;
     /* entry pool */
     fdb_entry_t  pool[FDB_MAX_ENTRIES];
     int          pool_used;
+    fdb_entry_t *free_list;     /* singly-linked reclaim list        */
     pthread_rwlock_t lock;   /* protects entire table        */
 } fdb_table_t;
 
@@ -52,9 +54,9 @@ int           fdb_learn(fdb_table_t *fdb,
                         const uint8_t mac[6], uint16_t vlan,
                         const char *port, uint32_t flags, uint32_t age_sec);
 
-/* lookup: NULL = miss (flood)                                    */
-const fdb_entry_t *fdb_lookup(fdb_table_t *fdb,
-                               const uint8_t mac[6], uint16_t vlan);
+/* lookup: returns 0 on hit (result copied into *out), -1 on miss */
+int fdb_lookup(fdb_table_t *fdb,
+               const uint8_t mac[6], uint16_t vlan, fdb_entry_t *out);
 
 /* delete one entry; returns 0=ok, -1=not found                   */
 int           fdb_delete(fdb_table_t *fdb,

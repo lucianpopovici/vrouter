@@ -1,8 +1,10 @@
 #include "fib_ipc.h"
 #include "fib.h"
 #include "fib_cli.h"
+#include "json_util.h"
 
 #include <stdio.h>
+#include <stdatomic.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,29 +32,6 @@ static void jcomma(char *b, size_t sz, size_t *pos)
     if (*pos < sz - 2) { b[(*pos)++] = ','; b[(*pos)++] = ' '; }
 }
 
-/* ─── Simple JSON field extractor (reuse from fib_cli.c) ───── */
-static int jget(const char *json, const char *key, char *buf, size_t sz)
-{
-    char needle[64];
-    snprintf(needle, sizeof(needle), "\"%s\"", key);
-    const char *p = strstr(json, needle);
-    if (!p) return -1;
-    p += strlen(needle);
-    while (*p == ' ' || *p == ':' || *p == '\t') p++;
-    if (*p == '"') {
-        p++;
-        size_t i = 0;
-        while (*p && *p != '"' && i < sz - 1) buf[i++] = *p++;
-        buf[i] = '\0';
-    } else {
-        size_t i = 0;
-        while (*p && *p != ',' && *p != '\n' && *p != '}' && i < sz - 1)
-            buf[i++] = *p++;
-        buf[i] = '\0';
-        while (i > 0 && (buf[i-1]==' '||buf[i-1]=='\r')) buf[--i]='\0';
-    }
-    return 0;
-}
 
 /* ─── Handle one JSON command, write JSON response ──────────── */
 static void handle_cmd(fib_table_t *fib, const char *req,
@@ -96,11 +75,11 @@ static void handle_cmd(fib_table_t *fib, const char *req,
     } else if (strcmp(cmd, "lookup") == 0) {
         char addr[16] = {0};
         jget(req, "addr", addr, sizeof(addr));
-        const fib_entry_t *e = fib_lookup(fib, addr);
-        if (e) {
-            struct in_addr nh = { htonl(e->nexthop) };
+        fib_entry_t entry;
+        if (fib_lookup(fib, addr, &entry) == 0) {
+            struct in_addr nh = { htonl(entry.nexthop) };
             char nh_s[INET_ADDRSTRLEN];
-            struct in_addr pfx = { htonl(e->prefix) };
+            struct in_addr pfx = { htonl(entry.prefix) };
             char pfx_s[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &nh,  nh_s,  sizeof(nh_s));
             inet_ntop(AF_INET, &pfx, pfx_s, sizeof(pfx_s));
@@ -108,7 +87,7 @@ static void handle_cmd(fib_table_t *fib, const char *req,
                 "{\"status\": \"ok\", \"addr\": \"%s\","
                 " \"prefix\": \"%s/%u\", \"nexthop\": \"%s\","
                 " \"iface\": \"%s\", \"metric\": %u}",
-                addr, pfx_s, e->prefix_len, nh_s, e->iface, e->metric);
+                addr, pfx_s, entry.prefix_len, nh_s, entry.iface, entry.metric);
         } else {
             snprintf(resp, rsz,
                 "{\"status\": \"miss\", \"addr\": \"%s\"}", addr);
@@ -135,7 +114,7 @@ static void handle_cmd(fib_table_t *fib, const char *req,
                     "{\"prefix\":\"%s/%u\",\"nexthop\":\"%s\"," \
                     "\"iface\":\"%s\",\"metric\":%u,\"hits\":%llu}",
                     ps, e->prefix_len, ns, e->iface, e->metric,
-                    (unsigned long long)e->hit_count);
+                    (unsigned long long)atomic_load_explicit(&e->hit_count, memory_order_relaxed));
                 need_comma = 1;
                 e = e->next;
             }
@@ -155,8 +134,8 @@ static void handle_cmd(fib_table_t *fib, const char *req,
             " \"routes\": %d, \"max_routes\": %u,"
             " \"total_lookups\": %llu, \"total_hits\": %llu}",
             fib->count, fib->max_routes,
-            (unsigned long long)fib->total_lookups,
-            (unsigned long long)fib->total_hits);
+            (unsigned long long)atomic_load_explicit(&fib->total_lookups, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&fib->total_hits,    memory_order_relaxed));
 
     /* ── get <key> ──────────────────────────────────────────── */
     } else if (strcmp(cmd, "get") == 0) {

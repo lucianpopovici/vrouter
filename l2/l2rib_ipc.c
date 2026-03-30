@@ -2,6 +2,7 @@
 #include "l2rib.h"
 #include "fdb.h"
 #include "l2_cli.h"
+#include "../l3/json_util.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,17 +15,6 @@
 #define IPC_BUF  4096
 #define IPC_RESP 32768
 
-static int jget(const char *j,const char *k,char *b,size_t sz)
-{
-    char needle[64]; snprintf(needle,sizeof(needle),"\"%s\"",k);
-    const char *p=strstr(j,needle); if(!p) return -1;
-    p+=strlen(needle);
-    while(*p==' '||*p==':'||*p=='\t') p++;
-    if(*p=='"'){p++;size_t i=0;while(*p&&*p!='"'&&i<sz-1) b[i++]=*p++;b[i]='\0';}
-    else{size_t i=0;while(*p&&*p!=','&&*p!='\n'&&*p!='}'&&i<sz-1) b[i++]=*p++;
-         b[i]='\0';while(i>0&&(b[i-1]==' '||b[i-1]=='\r')) b[--i]='\0';}
-    return 0;
-}
 
 /* Push best candidate into FDB */
 static void push_to_fdb(const l2rib_entry_t *entry,
