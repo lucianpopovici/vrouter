@@ -178,3 +178,198 @@ class ModuleAdapter:
     @property
     def version(self) -> str:
         return self.VERSION
+
+
+# ── FileBasedAdapter ────────────────────────────────────────────────────────
+
+class FileBasedAdapter:
+    """
+    File-based adapter: reads schema from a JSON file and persists runtime
+    overrides to another JSON file. No live daemon connection required.
+
+    Constructor args:
+        base_dir      directory containing schema_file and runtime_file
+        schema_file   filename of the JSON schema (relative to base_dir)
+        runtime_file  filename for persisted overrides (relative to base_dir)
+        keys          optional whitelist of key names to expose
+    """
+
+    def __init__(self, base_dir: str, schema_file: str, runtime_file: str,
+                 keys=None):
+        self._base_dir = base_dir
+        self._schema_path = os.path.join(base_dir, schema_file)
+        self._runtime_path = os.path.join(base_dir, runtime_file)
+        self._keys_filter = [k.upper() for k in keys] if keys is not None else None
+        self._schema_data_cache = None
+
+    # ── internal helpers ────────────────────────────────────────────
+
+    def _load_schema_data(self) -> dict:
+        if self._schema_data_cache is not None:
+            return self._schema_data_cache
+        if not os.path.exists(self._schema_path):
+            self._schema_data_cache = {}
+            return {}
+        with open(self._schema_path) as f:
+            data = json.load(f)
+        self._schema_data_cache = data
+        return data
+
+    def _schema_keys(self) -> dict:
+        return self._load_schema_data().get("keys", {})
+
+    def _load_runtime(self) -> dict:
+        if not os.path.exists(self._runtime_path):
+            return {}
+        with open(self._runtime_path) as f:
+            return json.load(f)
+
+    def _save_runtime(self, runtime: dict):
+        with open(self._runtime_path, "w") as f:
+            json.dump(runtime, f)
+
+    def _resolve_key(self, key: str) -> str:
+        """Normalize key to uppercase and validate it is accessible."""
+        key = key.upper()
+        if key not in self._schema_keys():
+            raise KeyError(key)
+        if self._keys_filter is not None and key not in self._keys_filter:
+            raise KeyError(key)
+        return key
+
+    def _coerce(self, key: str, value):
+        meta = self._schema_keys().get(key, {})
+        typ = meta.get("type", "str")
+        if typ == "int":
+            value = int(value)
+            mn = meta.get("min")
+            mx = meta.get("max")
+            if mn is not None and value < mn:
+                raise ValueError(f"{key}: {value} is below minimum {mn}")
+            if mx is not None and value > mx:
+                raise ValueError(f"{key}: {value} is above maximum {mx}")
+        elif typ == "bool":
+            if not isinstance(value, bool):
+                value = str(value).lower() in ("true", "1", "yes")
+        else:
+            value = str(value)
+        return value
+
+    # ── public interface ────────────────────────────────────────────
+
+    def get(self, key: str):
+        key = self._resolve_key(key)
+        runtime = self._load_runtime()
+        if key in runtime:
+            return runtime[key]
+        return self._schema_keys()[key].get("default")
+
+    def set(self, key: str, value):
+        key = self._resolve_key(key)
+        coerced = self._coerce(key, value)
+        runtime = self._load_runtime()
+        runtime[key] = coerced
+        self._save_runtime(runtime)
+        return coerced
+
+    def reset(self, key: str):
+        key = self._resolve_key(key)
+        runtime = self._load_runtime()
+        runtime.pop(key, None)
+        self._save_runtime(runtime)
+
+    def schema_rows(self) -> list:
+        rows = []
+        for key, meta in self._schema_keys().items():
+            if self._keys_filter is not None and key not in self._keys_filter:
+                continue
+            try:
+                val = self.get(key)
+            except Exception:
+                val = meta.get("default")
+            rows.append({
+                "group":       meta.get("group", "General"),
+                "key":         key,
+                "value":       val,
+                "type":        meta.get("type", "str"),
+                "description": meta.get("description", ""),
+                "min":         meta.get("min"),
+                "max":         meta.get("max"),
+                "mandatory":   meta.get("mandatory", False),
+                "default":     meta.get("default"),
+            })
+        return rows
+
+    @property
+    def version(self) -> str:
+        return self._load_schema_data().get("version", "unknown")
+
+
+# ── ModeAwareAdapter ────────────────────────────────────────────────────────
+
+class ModeAwareAdapter(FileBasedAdapter):
+    """
+    Extends FileBasedAdapter with mode-conditional key visibility.
+
+    Some keys are always visible (base_keys); others are only exposed when
+    the value of mode_key matches a specific mode (conditional_keys).
+
+    Constructor extra args:
+        base_keys        keys always visible
+        mode_key         key whose value selects the active mode
+        conditional_keys dict mapping mode string → list of extra visible keys
+    """
+
+    def __init__(self, base_dir: str, schema_file: str, runtime_file: str,
+                 base_keys, mode_key: str, conditional_keys: dict):
+        super().__init__(base_dir=base_dir, schema_file=schema_file,
+                         runtime_file=runtime_file)
+        self._base_keys = [k.upper() for k in base_keys]
+        self._mode_key = mode_key.upper()
+        self._conditional_keys = {
+            mode: [k.upper() for k in ks]
+            for mode, ks in conditional_keys.items()
+        }
+
+    def _current_mode(self) -> str:
+        try:
+            key = self._mode_key
+            runtime = self._load_runtime()
+            if key in runtime:
+                return str(runtime[key])
+            return str(self._schema_keys().get(key, {}).get("default", ""))
+        except Exception:
+            return ""
+
+    def _visible_keys(self) -> list:
+        mode = self._current_mode()
+        return self._base_keys + self._conditional_keys.get(mode, [])
+
+    def _resolve_key(self, key: str) -> str:
+        key = key.upper()
+        if key not in self._schema_keys():
+            raise KeyError(key)
+        if key not in self._visible_keys():
+            raise KeyError(f"{key}: not available in current mode")
+        return key
+
+    def schema_rows(self) -> list:
+        rows = []
+        for key in self._visible_keys():
+            meta = self._schema_keys().get(key, {})
+            try:
+                val = self.get(key)
+            except Exception:
+                val = meta.get("default")
+            rows.append({
+                "group":       meta.get("group", "General"),
+                "key":         key,
+                "value":       val,
+                "type":        meta.get("type", "str"),
+                "description": meta.get("description", ""),
+                "min":         meta.get("min"),
+                "max":         meta.get("max"),
+                "mandatory":   meta.get("mandatory", False),
+                "default":     meta.get("default"),
+            })
+        return rows
