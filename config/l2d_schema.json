@@ -1,0 +1,71 @@
+{
+  "module": "l2d",
+  "version": "1.0.0",
+  "description": "L2 forwarding daemon (FDB + L2RIB + STP/RSTP/MST)",
+  "socket_names": {
+    "fdb":     "fdb.sock",
+    "l2rib":   "rib.sock",
+    "stp":     "stp.sock",
+    "vlan":    "vlan.sock",
+    "portsec": "portsec.sock",
+    "storm":   "storm.sock",
+    "igmp":    "igmp.sock",
+    "arp":     "arp.sock",
+    "lacp":    "lacp.sock"
+  },
+  "keys": {
+    "FDB_AGE_SEC": {
+      "type": "int", "default": 300,
+      "min": 10, "max": 86400,
+      "description": "Dynamic FDB entry lifetime in seconds",
+      "mandatory": false, "group": "FDB"
+    },
+    "FDB_MAX_ENTRIES": {
+      "type": "int", "default": 65536,
+      "min": 100, "max": 524288,
+      "description": "Maximum FDB table size",
+      "mandatory": false, "group": "FDB"
+    },
+    "STP_MODE": {
+      "type": "str", "default": "rstp",
+      "choices": ["stp", "rstp", "mst"],
+      "description": "Spanning tree protocol variant",
+      "mandatory": false, "group": "STP"
+    },
+    "STP_PRIORITY": {
+      "type": "int", "default": 32768,
+      "min": 0, "max": 61440,
+      "description": "Bridge priority (must be multiple of 4096)",
+      "mandatory": false, "group": "STP"
+    },
+    "STP_HELLO": {
+      "type": "int", "default": 2,
+      "min": 1, "max": 10,
+      "description": "Hello time in seconds",
+      "mandatory": false, "group": "STP"
+    },
+    "STP_MAX_AGE": {
+      "type": "int", "default": 20,
+      "min": 6, "max": 40,
+      "description": "Max age for BPDU info in seconds",
+      "mandatory": false, "group": "STP"
+    },
+    "STP_FWD_DELAY": {
+      "type": "int", "default": 15,
+      "min": 4, "max": 30,
+      "description": "Forward delay timer in seconds",
+      "mandatory": false, "group": "STP"
+    },
+    "MST_REGION": {
+      "type": "str", "default": "",
+      "description": "MST region name (must match on all bridges)",
+      "mandatory": false, "group": "MST"
+    },
+    "MST_REVISION": {
+      "type": "int", "default": 0,
+      "min": 0, "max": 65535,
+      "description": "MST configuration revision number",
+      "mandatory": false, "group": "MST"
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "module": "fib",
+  "version": "1.0.0",
+  "description": "Forwarding Information Base daemon",
+  "socket_names": {"fib": "fibd.sock", "rib": "ribd.sock"},
+  "keys": {
+    "MAX_ROUTES": {
+      "type": "int",
+      "description": "Maximum number of FIB entries",
+      "default": 524288,
+      "min": 10,
+      "max": 524288,
+      "mandatory": false,
+      "group": "Capacity"
+    },
+    "DEFAULT_METRIC": {
+      "type": "int",
+      "description": "Default route metric when none specified",
+      "default": 1,
+      "min": 1,
+      "max": 65535,
+      "mandatory": false,
+      "group": "Routing"
+    },
+    "LOG_LEVEL": {
+      "type": "str",
+      "description": "Logging verbosity",
+      "default": "info",
+      "choices": ["debug", "info", "warn", "error"],
+      "mandatory": false,
+      "group": "Logging"
+    }
+  }
+}

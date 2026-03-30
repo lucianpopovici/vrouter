@@ -6,7 +6,7 @@ on:
 
 jobs:
   # ──────────────────────────────────────────────────────────────
-  # Job 1: Build both daemons
+  # Job 1: Build all daemons
   # ──────────────────────────────────────────────────────────────
   build-c:
     name: Build C Daemons
@@ -18,23 +18,23 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y gcc make netcat-openbsd
-      - name: Build All Daemons
+      - name: Build all
         run: make all -j$(nproc)
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
           name: binaries
           path: |
-            l3/fibd
-            l2/l2d
-            ip/ip_daemon
-            vrf/vrf_daemon
-            evpn/evpn_daemon
-            vxlan/vxlan_daemon
+            build/bin/fibd
+            build/bin/l2d
+            build/bin/ip_daemon
+            build/bin/vrf_daemon
+            build/bin/evpn_daemon
+            build/bin/vxlan_daemon
           retention-days: 1
 
   # ──────────────────────────────────────────────────────────────
-  # Job 2: Python Testing (BFD/LLDP)
+  # Job 2: Python tests
   # ──────────────────────────────────────────────────────────────
   test-python:
     name: Pytest (BFD & LLDP)
@@ -51,7 +51,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest
       - name: Run Pytest
-        run: pytest
+        run: cd tests && python -m pytest python/ -v
 
   # ──────────────────────────────────────────────────────────────
   # Job 3: L3 functional tests
@@ -67,10 +67,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: binaries
+          path: build/bin
       - name: Run L3 tests
         run: |
-          chmod +x l3/fibd
-          bash tests/test_l3.sh
+          chmod +x build/bin/fibd
+          bash tests/integration/test_l3.sh
 
   # ──────────────────────────────────────────────────────────────
   # Job 4: L2 functional tests
@@ -86,10 +87,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: binaries
+          path: build/bin
       - name: Run L2 tests
         run: |
-          chmod +x l2/l2d
-          bash tests/test_l2.sh
+          chmod +x build/bin/l2d
+          bash tests/integration/test_l2.sh
 
   # ──────────────────────────────────────────────────────────────
   # Job 5: Persistence + SIGHUP tests
@@ -105,13 +107,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: binaries
+          path: build/bin
       - name: Run persistence tests
         run: |
-          chmod +x l3/fibd l2/l2d
-          bash tests/test_persist.sh
+          chmod +x build/bin/fibd build/bin/l2d
+          bash tests/integration/test_persist.sh
 
   # ──────────────────────────────────────────────────────────────
-  # Job 6: Build with stricter flags (catches latent issues)
+  # Job 6: Build (strict warnings)
   # ──────────────────────────────────────────────────────────────
   build-strict:
     name: Build (strict warnings as errors)
@@ -121,12 +124,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y gcc make
-      - name: Build L3 with -Werror
-        working-directory: l3
-        run: make -j$(nproc) CFLAGS="-Wall -Wextra -Wpedantic -std=c11 -O2 -D_POSIX_C_SOURCE=200809L -Werror"
-      - name: Build L2 with -Werror
-        working-directory: l2
-        run: make -j$(nproc) CFLAGS="-Wall -Wextra -std=c11 -O2 -D_POSIX_C_SOURCE=200809L -Wno-unused-function -Werror -I../l3"
+      - name: Build all strict
+        run: make all -j$(nproc)
 
   # ──────────────────────────────────────────────────────────────
   # Job 7: Build with sanitizers
@@ -139,12 +138,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y gcc make
-      - name: Build L3 with sanitizers
-        working-directory: l3
-        run: make -j$(nproc) CFLAGS="-Wall -Wextra -std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -D_POSIX_C_SOURCE=200809L" LDFLAGS="-fsanitize=address,undefined"
-      - name: Build L2 with sanitizers
-        working-directory: l2
-        run: make -j$(nproc) CFLAGS="-Wall -Wextra -std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -D_POSIX_C_SOURCE=200809L -Wno-unused-function -I../l3" LDFLAGS="-fsanitize=address,undefined"
+      - name: Build with sanitizers
+        run: make all -j$(nproc) MODE=debug
 
   # ──────────────────────────────────────────────────────────────
   # Job 8: Build matrix (compilers)
@@ -163,5 +158,5 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ${{ matrix.compiler }} make
-      - name: Build project
+      - name: Build all
         run: make all -j$(nproc) CC=${{ matrix.compiler }}

@@ -1,14 +1,47 @@
-# Network Stack — C Implementation
+# vrouter — Network Stack (C Implementation)
 
-## Structure
+A multi-daemon network stack with L2 (FDB, STP, LACP, VLAN, port-security) and L3 (RIB, FIB, IP, VRF, EVPN, VXLAN) support, controlled via Unix-domain socket IPC.
+
+---
+
+## Directory layout
 
 ```
-l3/    — Layer 3: RIB + FIB with project-cli integration
-l2/    — Layer 2: 9-module L2 daemon with project-cli integration
-ip/    — IP addressing + ECMP forwarding (IPv4/IPv6)
-vrf/   — VRF instances with ECMP + inter-VRF route leaking
-evpn/  — BGP EVPN (Type 2/3/5, EVI, VTEP, Ethernet Segment)
-vxlan/ — VXLAN tunnelling (VNI, FDB, flood lists)
+vrouter/
+├── lib/                  # Shared C library (libvrouter.a)
+│   ├── include/vrouter/  # hash.h, json.h, net_types.h, net_parse.h, ipc_server.h
+│   └── src/              # json.c, net_parse.c, ipc_server.c
+│
+├── src/                  # Daemon modules
+│   ├── l2/               # L2 daemon (l2d): FDB, STP, LACP, VLAN, port-security, storms, IGMP
+│   ├── l3/               # L3 daemon (fibd): RIB + FIB
+│   ├── ip/               # IP daemon: IPv4/IPv6 addressing + ECMP forwarding
+│   ├── vrf/              # VRF daemon: VRF instances + inter-VRF route leaking
+│   ├── evpn/             # EVPN daemon: BGP EVPN (Type 2/3/5, EVI, VTEP, ES)
+│   └── vxlan/            # VXLAN daemon: VNI, FDB, flood lists
+│
+├── python/               # Python control plane
+│   ├── bfd/              # BFD session management
+│   ├── lldp/             # LLDP
+│   ├── modules/          # Orchestrator modules
+│   ├── main.py           # Control plane entry point
+│   └── project-cli       # CLI tool
+│
+├── tests/
+│   ├── unit/             # C unit tests (test_ip, test_vrf, test_evpn, test_vxlan)
+│   ├── integration/      # Shell integration tests (test_l3.sh, test_l2.sh, test_persist.sh)
+│   ├── python/           # Python unit tests (pytest)
+│   └── bench/            # Benchmark (bench_thread.c)
+│
+├── config/               # Schema + default config files
+├── build/                # All build output (gitignored)
+│   ├── bin/              # Daemon binaries
+│   ├── lib/              # libvrouter.a
+│   ├── obj/              # Object files
+│   └── tests/            # Test binaries
+│
+├── Makefile              # Root: orchestrates everything
+└── common.mk             # Shared compiler flags + paths
 ```
 
 ---
@@ -16,193 +49,79 @@ vxlan/ — VXLAN tunnelling (VNI, FDB, flood lists)
 ## Build
 
 ```bash
-make          # build all daemons
-make l3       # L3 only
-make l2       # L2 only
-make ip       # IP only
-make vrf      # VRF only
-make evpn     # EVPN only
-make vxlan    # VXLAN only
-make clean
-make install  # installs to /usr/local/bin
+make              # build lib + all daemons + tests
+make lib          # shared library only
+make daemons      # all daemon binaries
+make MODE=debug   # build with ASan + UBSan + debug symbols
+make clean        # remove build/
+make install      # install binaries to /usr/sbin (DESTDIR supported)
 ```
 
-### Run / Stop
+All output lands in `build/`:
+- `build/bin/fibd`, `l2d`, `ip_daemon`, `vrf_daemon`, `evpn_daemon`, `vxlan_daemon`
+- `build/lib/libvrouter.a`
+- `build/tests/test_ip`, `test_vrf`, `test_evpn`, `test_vxlan`
+
+---
+
+## Run / Stop
 
 ```bash
-make run      # start all daemons (background)
-make stop     # kill all daemons
-make status   # show processes + socket health
-```
+make run            # start all daemons (sockets in /tmp/vrouter/)
+make stop           # kill all daemons
+make status         # list active sockets
 
-Individual daemons:
-
-```bash
-make run-l3   make run-l2   make run-ip
-make run-vrf  make run-evpn make run-vxlan
+# Or individually:
+build/bin/fibd      -S /tmp/vrouter &
+build/bin/l2d       -m rstp -S /tmp/vrouter &
+build/bin/ip_daemon -S /tmp/vrouter &
 ```
 
 ---
 
-## L3 (l3/)
-
-Daemon: `fibd`
-
-### Sockets
-| Socket | Module |
-|--------|--------|
-| `$SOCK_DIR/ribd.sock` | RIB — route add/del with AD & source selection |
-| `$SOCK_DIR/fibd.sock` | FIB — LPM lookup, fast forwarding plane |
-
-### project-cli integration
-- Writes `schema.json` at startup (tier-3)
-- Reads/writes `runtime_config.json` for `MAX_ROUTES` (up to 524288), `DEFAULT_METRIC`
-- `get`/`set` commands on both sockets
-
----
-
-## L2 (l2/)
-
-Daemon: `l2d`
+## Tests
 
 ```bash
-./l2d -m rstp   # stp | rstp | mst
+make test-c             # run C unit test binaries
+make test-py            # run Python tests via pytest
+make test-integration   # run shell integration tests
+make test-all           # run everything
 ```
 
-### Modules & Sockets
-| Socket | Module | Key commands |
-|--------|--------|-------------|
-| `$SOCK_DIR/fdb.sock`     | FDB (hash table)    | learn, lookup, flush, age, show, stats, get/set |
-| `$SOCK_DIR/rib.sock`     | L2 RIB              | add, del, show, stats, get/set |
-| `$SOCK_DIR/stp.sock`     | STP/RSTP/MST        | port_up/down, bpdu, tick, mst_map, set_priority, get/set |
-| `$SOCK_DIR/vlan.sock`    | VLAN DB (802.1Q)    | add, del, port_set, port_allow/deny, show |
-| `$SOCK_DIR/portsec.sock` | Port Security       | configure, check, sticky, recover, show |
-| `$SOCK_DIR/storm.sock`   | Storm Control       | set_rate, check, clear, show |
-| `$SOCK_DIR/igmp.sock`    | IGMP Snooping       | report, leave, query, age, show, stats |
-| `$SOCK_DIR/arp.sock`     | ARP/ND Snooping     | learn, lookup, age, show, stats |
-| `$SOCK_DIR/lacp.sock`    | LACP (802.3ad)      | lag_add/del, member_add/del, bpdu, tick, hash, show |
-
-### project-cli integration
-- Writes `l2d_schema.json` at startup (tier-3, 9 config keys)
-- Reads/writes `l2d_runtime_config.json`
-- `get`/`set` on fdb, rib, stp sockets (FDB_AGE_SEC, FDB_MAX_ENTRIES, STP_MODE, STP_PRIORITY, STP_HELLO, STP_MAX_AGE, STP_FWD_DELAY, MST_REGION, MST_REVISION)
-
----
-
-## IP (ip/)
-
-Daemon: `ip_daemon`
-Socket: `$SOCK_DIR/ip.sock`
-
-IPv4/IPv6 address management and ECMP forwarding. Each forwarding entry holds up to 64 ECMP paths with weighted FNV-1a flow hashing.
-
-### Commands
-| Command | Description |
-|---------|-------------|
-| `add_addr` / `del_addr` / `list_addrs` | Interface address management |
-| `get_interface` / `list_interfaces` / `set_if_fwd` | Interface operations |
-| `add_route` / `del_route` / `list_routes` | Route management |
-| `add_nexthop` / `del_nexthop` | Per-path ECMP manipulation |
-| `lookup` | ECMP-aware FIB lookup (optional flow key) |
-| `set_forwarding` / `get_forwarding` | Global IPv4/IPv6 forwarding toggle |
-| `set_ecmp_hash` | Per-prefix hash mode (src_ip, dst_ip, src_port, dst_port, proto) |
-| `get_stats` / `clear_stats` | Per-AF counters |
-| `dump_config` / `load_config` | Persistence |
-
+Individual tests:
 ```bash
-echo '{"cmd":"add_route","prefix":"10.0.0.0/8","nexthop":"192.168.1.1","ifindex":2}' | nc -U /tmp/ip.sock
-echo '{"cmd":"lookup","dst":"10.1.2.3","src":"1.2.3.4","proto":6}' | nc -U /tmp/ip.sock
-echo '{"cmd":"set_ecmp_hash","prefix":"10.0.0.0/8","mode":3}' | nc -U /tmp/ip.sock
+bash tests/integration/test_l3.sh
+bash tests/integration/test_l2.sh
+bash tests/integration/test_persist.sh
+cd tests && python -m pytest python/ -v
 ```
 
 ---
 
-## VRF (vrf/)
+## IPC protocol
 
-Daemon: `vrf_daemon`
-Socket: `$SOCK_DIR/vrf.sock`
+Each daemon listens on a Unix-domain socket. Commands are flat JSON objects; responses are flat JSON objects.
 
-VRF instances with per-VRF ECMP forwarding tables and inter-VRF route leaking.
-
-### Commands
-| Command | Description |
-|---------|-------------|
-| `create_vrf` / `delete_vrf` / `list_vrfs` / `get_vrf` | VRF lifecycle |
-| `bind_interface` / `unbind_interface` / `list_interfaces` / `get_if_vrf` | Interface binding |
-| `add_route` / `del_route` / `list_routes` | Per-VRF route management |
-| `add_nexthop` / `del_nexthop` | ECMP path manipulation |
-| `lookup` | VRF-aware ECMP lookup |
-| `set_ecmp_hash` | Per-prefix hash mode override |
-| `leak_route` / `unleak_route` / `list_leaks` | Inter-VRF route leaking |
-| `get_stats` / `clear_stats` | Per-VRF counters |
-| `dump_config` / `load_config` | Persistence |
-
+Example (L3 FIB):
 ```bash
-echo '{"cmd":"create_vrf","vrf_id":10,"name":"mgmt"}' | nc -U /tmp/vrf.sock
-echo '{"cmd":"bind_interface","vrf_id":10,"ifindex":3}' | nc -U /tmp/vrf.sock
-echo '{"cmd":"leak_route","src_vrf":10,"dst_vrf":1,"prefix":"192.168.0.0/24"}' | nc -U /tmp/vrf.sock
+echo '{"cmd":"add","prefix":"10.0.0.0/8","nexthop":"1.2.3.4","iface":"eth0"}' \
+  | nc -U /tmp/vrouter/fibd.sock
+# → {"status": "ok", "msg": "route 10.0.0.0/8 added"}
+
+echo '{"cmd":"lookup","addr":"10.1.2.3"}' | nc -U /tmp/vrouter/fibd.sock
+# → {"status": "ok", "prefix": "10.0.0.0/8", "nexthop": "1.2.3.4", ...}
 ```
 
 ---
 
-## EVPN (evpn/)
+## Shared library (`lib/`)
 
-Daemon: `evpn_daemon`
-Socket: `$SOCK_DIR/evpn.sock`
+`libvrouter.a` provides utilities shared by all modules:
 
-BGP EVPN control plane. Manages EVIs (EVI = per-VLAN service instance), VTEPs, MAC/IP bindings (Type 2), IMET routes (Type 3), IP prefixes (Type 5), and Ethernet Segments (Type 4).
-
-### Commands
-| Command | Description |
-|---------|-------------|
-| `create_evi` / `delete_evi` / `list_evis` / `get_evi` | EVI lifecycle |
-| `set_evi_rd` / `add_evi_rt` / `del_evi_rt` | RD/RT configuration |
-| `set_irb` | IRB interface binding |
-| `add_vtep` / `del_vtep` / `list_vteps` | VTEP management |
-| `add_mac` / `del_mac` / `learn_mac` / `list_macs` / `lookup_mac` / `flush_mac` | Type 2 MAC/IP routes |
-| `add_imet` / `del_imet` / `list_imet` | Type 3 IMET routes |
-| `add_prefix` / `del_prefix` / `list_prefixes` / `lookup_prefix` | Type 5 IP prefix routes |
-| `add_es` / `del_es` / `list_es` | Type 4 Ethernet Segments |
-| `get_stats` / `clear_stats` | Counters |
-| `dump_config` / `load_config` | Persistence |
-
-```bash
-echo '{"cmd":"create_evi","evi":100,"vni":10100}' | nc -U /tmp/evpn.sock
-echo '{"cmd":"add_vtep","evi":100,"vtep_ip":"10.0.0.1"}' | nc -U /tmp/evpn.sock
-echo '{"cmd":"learn_mac","evi":100,"mac":"aa:bb:cc:dd:ee:ff","vtep_ip":"10.0.0.1"}' | nc -U /tmp/evpn.sock
-```
-
----
-
-## VXLAN (vxlan/)
-
-Daemon: `vxlan_daemon`
-Socket: `$SOCK_DIR/vxlan.sock`
-
-VXLAN data plane. Manages VNIs, tunnels (src/dst VTEP pairs), per-VNI FDB (MAC→VTEP), and flood lists.
-
-### Commands
-| Command | Description |
-|---------|-------------|
-| `add_vni` / `del_vni` / `list_vnis` / `get_vni` | VNI management |
-| `set_vni_flood` | Flood mode (head-end replication / multicast) |
-| `add_tunnel` / `del_tunnel` / `list_tunnels` / `get_tunnel` | Tunnel management |
-| `add_fdb` / `del_fdb` / `list_fdb` / `lookup_fdb` / `flush_fdb` | Per-VNI FDB |
-| `add_flood` / `del_flood` / `list_flood` | Flood list entries |
-| `send_frame` | Inject an encapsulated frame |
-| `get_stats` / `clear_stats` | Counters |
-| `dump_config` / `load_config` | Persistence |
-
-```bash
-echo '{"cmd":"add_vni","vni":10100,"local_vtep":"10.0.0.1"}' | nc -U /tmp/vxlan.sock
-echo '{"cmd":"add_fdb","vni":10100,"mac":"aa:bb:cc:dd:ee:ff","remote_vtep":"10.0.0.2"}' | nc -U /tmp/vxlan.sock
-echo '{"cmd":"add_flood","vni":10100,"remote_vtep":"10.0.0.2"}' | nc -U /tmp/vxlan.sock
-```
-
----
-
-## Common notes
-
-- All commands use **JSON over Unix socket** (`SOCK_DIR` defaults to `/tmp`, override with `make SOCK_DIR=/var/run/vrouter`)
-- All daemons respond to `{"cmd":"ping"}` on their socket
-- Config persistence: each daemon writes a schema JSON at startup and supports `dump_config`/`load_config`
+| Header | Purpose |
+|--------|---------|
+| `<vrouter/hash.h>` | FNV-1a hash (`vr_fnv1a`, `vr_fnv1a_mod`) — header-only |
+| `<vrouter/json.h>` | Flat JSON parser (`vr_json_get_str/int/bool`) |
+| `<vrouter/net_types.h>` | Shared types: `vr_addr_t`, `vr_prefix_t`, `vr_mac_t` |
+| `<vrouter/net_parse.h>` | Address/prefix/MAC parse + format + compare |
+| `<vrouter/ipc_server.h>` | Generic Unix-socket accept loop |

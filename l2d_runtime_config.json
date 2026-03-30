@@ -1,0 +1,7 @@
+{
+  "STP_PRIORITY": 4096
+,
+  "MST_REGION": "CORE"
+,
+  "FDB_AGE_SEC": 120
+}

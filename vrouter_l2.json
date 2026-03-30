@@ -1,0 +1,8 @@
+{"type":"vlan","vid":100,"name":"prod"}
+{"type":"vlan","vid":200,"name":"mgmt"}
+{"type":"vlan_port","port":"eth0","mode":"access","pvid":100}
+{"type":"vlan_port","port":"eth1","mode":"trunk","pvid":1}
+{"type":"stp","priority":4096,"hello":2,"max_age":20,"fwd_delay":15,"mode":"mst","mst_region":"CORE","mst_revision":0}
+{"type":"lacp_lag","lag":"bond0","key":1}
+{"type":"lacp_member","lag":"bond0","port":"eth0","mode":"active"}
+{"type":"lacp_member","lag":"bond0","port":"eth1","mode":"active"}
