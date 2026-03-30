@@ -11,6 +11,7 @@
 #include "l2_ipc_extra.h"
 #include "lacp.h"
 #include "fdb.h"
+#include "../l3/json_util.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,17 +28,6 @@
 #define IBUF 4096
 #define OBUF 32768
 
-/* ── shared mini JSON helpers ───────────────────────────────── */
-static int jget(const char *j, const char *k, char *b, size_t sz) {
-    char nd[64]; snprintf(nd,sizeof(nd),"\"%s\"",k);
-    const char *p=strstr(j,nd); if(!p) return -1;
-    p+=strlen(nd);
-    while(*p==' '||*p==':'||*p=='\t') p++;
-    if(*p=='"'){p++;size_t i=0;while(*p&&*p!='"'&&i<sz-1)b[i++]=*p++;b[i]='\0';}
-    else{size_t i=0;while(*p&&*p!=','&&*p!='\n'&&*p!='}'&&i<sz-1)b[i++]=*p++;
-         b[i]='\0';while(i>0&&(b[i-1]==' '||b[i-1]=='\r'))b[--i]='\0';}
-    return 0;
-}
 static int sock_serve(const char *path, void *ctx,
                        void (*handler)(void*,const char*,char*,size_t),
                        volatile int *running) {

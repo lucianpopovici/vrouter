@@ -77,7 +77,8 @@ static void *fib_reader(void *arg) {
     int i = 0;
     while (!done) {
         pfx_of(i % 50000, pfx, sizeof(pfx));
-        fib_lookup(&g_fib, pfx);
+        fib_entry_t tmp;
+        fib_lookup(&g_fib, pfx, &tmp);
         fib_count(&g_fib);
         i++;
         __atomic_fetch_add(&fib_ops, 1, __ATOMIC_RELAXED);
@@ -126,7 +127,8 @@ static void *fdb_reader(void *arg) {
             (uint8_t)(i&0xFF)
         };
         uint16_t vlan = (uint16_t)(1 + (i % 100));
-        fdb_lookup(&g_fdb, mac, vlan);
+        fdb_entry_t tmp;
+        fdb_lookup(&g_fdb, mac, vlan, &tmp);
         i++;
         __atomic_fetch_add(&fdb_ops, 1, __ATOMIC_RELAXED);
     }

@@ -2,12 +2,14 @@
 #include "rib.h"
 #include "fib.h"
 #include "fib_cli.h"
+#include "json_util.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/select.h>
@@ -16,28 +18,6 @@
 #define IPC_BUF_SZ     4096
 #define IPC_RESP_SZ   16384
 
-/* ─── JSON field extractor (same pattern as fib_ipc) ───────── */
-static int jget(const char *json, const char *key, char *buf, size_t sz)
-{
-    char needle[64];
-    snprintf(needle, sizeof(needle), "\"%s\"", key);
-    const char *p = strstr(json, needle);
-    if (!p) return -1;
-    p += strlen(needle);
-    while (*p == ' ' || *p == ':' || *p == '\t') p++;
-    if (*p == '"') {
-        p++; size_t i = 0;
-        while (*p && *p != '"' && i < sz - 1) buf[i++] = *p++;
-        buf[i] = '\0';
-    } else {
-        size_t i = 0;
-        while (*p && *p != ',' && *p != '\n' && *p != '}' && i < sz-1)
-            buf[i++] = *p++;
-        buf[i] = '\0';
-        while (i > 0 && (buf[i-1]==' '||buf[i-1]=='\r')) buf[--i]='\0';
-    }
-    return 0;
-}
 
 /* ─── FIB push callback ─────────────────────────────────────── *
  * Called by rib_add/rib_del when the best route changes.        *
@@ -173,22 +153,22 @@ static void handle_cmd(rib_table_t *rib, fib_table_t *fib,
     } else if (strcmp(cmd, "get") == 0) {
         char prefix[32] = {0};
         jget(req, "prefix", prefix, sizeof(prefix));
-        const rib_entry_t *e = rib_find(rib, prefix);
-        if (!e) {
+        rib_entry_t entry;
+        if (rib_find(rib, prefix, &entry) != 0) {
             snprintf(resp, rsz,
                 "{\"status\": \"miss\", \"prefix\": \"%s\"}", prefix);
             return;
         }
-        struct in_addr pi = { htonl(e->prefix) };
+        struct in_addr pi = { htonl(entry.prefix) };
         char ps[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &pi, ps, sizeof(ps));
         size_t pos = 0;
         pos += (size_t)snprintf(resp+pos, rsz-pos,
             "{\"status\": \"ok\","
             " \"prefix\": \"%s/%u\","
-            " \"candidates\": [", ps, e->prefix_len);
-        for (int j = 0; j < e->n_candidates && pos < rsz - 256; j++) {
-            const rib_candidate_t *c = &e->candidates[j];
+            " \"candidates\": [", ps, entry.prefix_len);
+        for (int j = 0; j < entry.n_candidates && pos < rsz - 256; j++) {
+            const rib_candidate_t *c = &entry.candidates[j];
             struct in_addr ni = { htonl(c->nexthop) };
             char ns[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &ni, ns, sizeof(ns));
@@ -226,6 +206,7 @@ static void handle_cmd(rib_table_t *rib, fib_table_t *fib,
 
     /* ── flush ──────────────────────────────────────────────── */
     } else if (strcmp(cmd, "flush") == 0) {
+        pthread_rwlock_wrlock(&rib->lock);
         /* withdraw all active routes from FIB first */
         for (uint32_t _b = 0; _b < rib->n_buckets; _b++) {
             rib_entry_t *e = rib->buckets[_b];
@@ -239,6 +220,8 @@ static void handle_cmd(rib_table_t *rib, fib_table_t *fib,
         memset(rib->pool, 0, rib->pool_used * sizeof(rib_entry_t));
         rib->pool_used = 0;
         rib->count = 0;
+        rib->free_list = NULL;
+        pthread_rwlock_unlock(&rib->lock);
         snprintf(resp, rsz,
             "{\"status\": \"ok\", \"msg\": \"rib flushed\"}");
 

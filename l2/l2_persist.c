@@ -1,22 +1,12 @@
 #include "l2_persist.h"
 #include "lacp.h"
+#include "../l3/json_util.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 
-/* ── tiny JSON extractor ────────────────────────────────────── */
-static int jget(const char *j, const char *k, char *b, size_t sz) {
-    char nd[64]; snprintf(nd, sizeof(nd), "\"%s\"", k);
-    const char *p = strstr(j, nd); if (!p) return -1;
-    p += strlen(nd);
-    while (*p==' '||*p==':'||*p=='\t') p++;
-    if (*p=='"'){p++;size_t i=0;while(*p&&*p!='"'&&i<sz-1)b[i++]=*p++;b[i]='\0';}
-    else{size_t i=0;while(*p&&*p!=','&&*p!='\n'&&*p!='}'&&i<sz-1)b[i++]=*p++;
-         b[i]='\0';while(i>0&&(b[i-1]==' '||b[i-1]=='\r'))b[--i]='\0';}
-    return 0;
-}
 
 /* ═══════════════════════════════════════════════════════════════
  * DUMP

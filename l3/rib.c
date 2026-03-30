@@ -7,6 +7,24 @@
 #include <arpa/inet.h>
 #include <errno.h>
 
+const uint8_t RIB_DEFAULT_AD[RIB_SRC_COUNT] = {
+    [RIB_SRC_CONNECTED] =   0,
+    [RIB_SRC_STATIC]    =   1,
+    [RIB_SRC_EBGP]      =  20,
+    [RIB_SRC_OSPF]      = 110,
+    [RIB_SRC_IBGP]      = 200,
+    [RIB_SRC_UNKNOWN]   = 255,
+};
+
+const char *const RIB_SRC_NAME[RIB_SRC_COUNT] = {
+    [RIB_SRC_CONNECTED] = "connected",
+    [RIB_SRC_STATIC]    = "static",
+    [RIB_SRC_EBGP]      = "ebgp",
+    [RIB_SRC_OSPF]      = "ospf",
+    [RIB_SRC_IBGP]      = "ibgp",
+    [RIB_SRC_UNKNOWN]   = "unknown",
+};
+
 /* ═══════════════════════════════════════════════════════════════
  * Hash: FNV-1a over {prefix u32, prefix_len u8}
  * ═══════════════════════════════════════════════════════════════ */
@@ -65,9 +83,14 @@ int rib_source_from_str(const char *s)
  * ═══════════════════════════════════════════════════════════════ */
 static rib_entry_t *pool_alloc(rib_table_t *rib)
 {
-    if (!rib->pool || rib->pool_used >= rib->pool_size) return NULL;
-    rib_entry_t *e = &rib->pool[rib->pool_used++];
-    memset(e, 0, sizeof(*e));
+    rib_entry_t *e = NULL;
+    if (rib->free_list) {
+        e = rib->free_list;
+        rib->free_list = e->next;
+    } else if (rib->pool && rib->pool_used < rib->pool_size) {
+        e = &rib->pool[rib->pool_used++];
+    }
+    if (e) memset(e, 0, sizeof(*e));
     return e;
 }
 
@@ -259,7 +282,13 @@ int rib_del(rib_table_t *rib,
         uint32_t idx = rib_hash(pfx, len, rib->n_buckets);
         rib_entry_t **pp = &rib->buckets[idx];
         while (*pp && *pp != entry) pp = &(*pp)->next;
-        if (*pp) { *pp = entry->next; rib->count--; }
+        if (*pp) {
+            *pp = entry->next;
+            rib->count--;
+            memset(entry, 0, sizeof(*entry));
+            entry->next = rib->free_list;
+            rib->free_list = entry;
+        }
     }
 
 out:
@@ -270,16 +299,18 @@ out:
 /* ═══════════════════════════════════════════════════════════════
  * rib_find — O(1) average, thread-safe (read lock)
  * ═══════════════════════════════════════════════════════════════ */
-const rib_entry_t *rib_find(const rib_table_t *rib,
-                              const char *prefix_cidr)
+int rib_find(const rib_table_t *rib,
+             const char *prefix_cidr, rib_entry_t *out)
 {
     uint32_t pfx; uint8_t len;
-    if (fib_parse_cidr(prefix_cidr, &pfx, &len) != 0) return NULL;
+    if (fib_parse_cidr(prefix_cidr, &pfx, &len) != 0) return -1;
 
     pthread_rwlock_rdlock((pthread_rwlock_t *)&rib->lock);
     rib_entry_t *e = entry_find_locked((rib_table_t *)rib, pfx, len);
+    int rc = -1;
+    if (e && out) { *out = *e; rc = 0; }
     pthread_rwlock_unlock((pthread_rwlock_t *)&rib->lock);
-    return e;
+    return rc;
 }
 
 /* ═══════════════════════════════════════════════════════════════

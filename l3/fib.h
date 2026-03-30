@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 /* ─── Constants ─────────────────────────────────────────────── */
 #define FIB_BUCKETS        8192        /* power of 2              */
@@ -24,7 +25,7 @@ typedef struct fib_entry {
     char              iface[FIB_IFNAME_LEN];
     uint32_t          metric;
     uint32_t          flags;
-    uint64_t          hit_count;
+    atomic_uint_fast64_t hit_count;
     struct fib_entry *next;         /* hash chain                 */
 } fib_entry_t;
 
@@ -37,8 +38,9 @@ typedef struct {
     uint32_t          pool_used;
     uint32_t          max_routes;   /* runtime cap (≤ pool_size)  */
     int               count;
-    uint64_t          total_lookups;
-    uint64_t          total_hits;
+    atomic_uint_fast64_t total_lookups;
+    atomic_uint_fast64_t total_hits;
+    fib_entry_t      *free_list;    /* singly-linked reclaim list */
     pthread_rwlock_t  lock;
 } fib_table_t;
 
@@ -51,7 +53,7 @@ int  fib_add(fib_table_t *fib, const char *prefix_cidr,
              uint32_t metric, uint32_t flags);
 int  fib_del(fib_table_t *fib, const char *prefix_cidr);
 
-const fib_entry_t *fib_lookup(fib_table_t *fib, const char *addr_str);
+int fib_lookup(fib_table_t *fib, const char *addr_str, fib_entry_t *out);
 
 void fib_flush(fib_table_t *fib);
 int  fib_count(const fib_table_t *fib);
