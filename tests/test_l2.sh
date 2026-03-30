@@ -164,7 +164,7 @@ check "set BC 1000pps" storm.sock \
     '{"cmd":"set_rate","port":"eth0","type":"broadcast","pps":"1000","burst":"500"}' '"ok"'
 check "first frame passes" storm.sock \
     '{"cmd":"check","port":"eth0","type":"broadcast"}' '"pass"'
-check "show has bucket"storm.sock '{"cmd":"show"}' '"rate_pps"'
+check "show has bucket" storm.sock '{"cmd":"show"}' '"rate_pps"'
 
 # ── IGMP Snooping ─────────────────────────────────────────────────
 echo ""
